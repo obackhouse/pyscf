@@ -565,14 +565,14 @@ def _band_lanczos(se_occ, n=0, max_memory=None):
 
     # cholesky qr factorisation of v.T
     coupling = se_occ.coupling
-    x = np.dot(coupling, coupling.T)
+    x = np.dot(coupling, coupling.T.conj())
 
     try:
         v_tri = np.linalg.cholesky(x).T
     except np.linalg.LinAlgError:
         w, v = np.linalg.eigh(x)
-        w[w < 1e-20] = 1e-20
-        x_posdef = np.dot(np.dot(v, np.diag(w)), v.T)
+        w[np.absolute(w) < 1e-16] = 1e-16
+        x_posdef = np.dot(np.dot(v, np.diag(w)), v.T.conj())
         v_tri = np.linalg.cholesky(x_posdef).T
 
     q[:nphys] = np.dot(np.linalg.inv(v_tri).T, coupling)

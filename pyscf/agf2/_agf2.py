@@ -40,18 +40,18 @@ def cholesky_build(vv, vev, eps=1e-16):
     nmo = vv.shape[0]
 
     try:
-        b = np.linalg.cholesky(vv).T
+        b = np.linalg.cholesky(vv).conj().T
     except np.linalg.LinAlgError:
         w, v = np.linalg.eigh(vv)
         w[w < eps] = eps
         vv_posdef = np.dot(np.dot(v, np.diag(w)), v.T.conj())
-        b = np.linalg.cholesky(vv_posdef).T
+        b = np.linalg.cholesky(vv_posdef).conj().T
 
     b_inv = np.linalg.inv(b)
 
-    m = np.dot(np.dot(b_inv.T, vev), b_inv)
+    m = np.dot(np.dot(b_inv.T.conj(), vev), b_inv)
     e, c = np.linalg.eigh(m)
-    c = np.dot(b.T, c[:nmo])
+    c = np.dot(b.T.conj(), c[:nmo])
 
     return e, c
 
