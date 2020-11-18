@@ -59,6 +59,15 @@ def kernel(agf2, eri=None, gf=None, se=None, verbose=None, dump_chk=True):
     if dump_chk:
         agf2.dump_chk(gf=gf, se=se)
 
+    if isinstance(agf2.diis, lib.diis.DIIS):
+        diis = agf2.diis
+    elif agf2.diis:
+        diis = lib.diis.DIIS(agf2)
+        diis.space = agf2.diis_space
+        diis.min_space = agf2.diis_min_space
+    else:
+        diis = None
+
     e_init = agf2.energy_mp2(agf2.mo_energy, se)
     log.info('E(init) = %.16g  E_corr(init) = %.16g', e_init+eri.e_hf, e_init)
 
@@ -78,6 +87,7 @@ def kernel(agf2, eri=None, gf=None, se=None, verbose=None, dump_chk=True):
 
         # two-body terms
         se = agf2.build_se(eri, gf, se_prev=se_prev)
+        se = agf2.run_diis(se, diis)
         e_2b = agf2.energy_2body(gf, se)
 
         if dump_chk:
@@ -284,8 +294,8 @@ def fock_loop(agf2, eri, gf, se):
     log = logger.Logger(agf2.stdout, agf2.verbose)
 
     diis = lib.diis.DIIS(agf2)
-    diis.space = agf2.diis_space
-    diis.min_space = agf2.diis_min_space
+    diis.space = agf2.fock_diis_space
+    diis.min_space = agf2.fock_diis_min_space
     fock = agf2.get_fock(eri, gf)
 
     nelec = eri.nocc * 2
@@ -453,9 +463,16 @@ class RAGF2(lib.StreamObject):
         weight_tol : float
             Threshold in spectral weight of auxiliaries to be considered
             zero. Default 1e-11.
+        diis : bool or lib.diis.DIIS
+            Whether to use DIIS, can also be a lib.diis.DIIS object. Default
+            value is True.
         diis_space : int
-            DIIS space size for Fock loop iterations. Default value is 6.
+            DIIS space size. Default value is 8.
         diis_min_space : int
+            Minimum space of DIIS. Default value is 1.
+        fock_diis_space : int
+            DIIS space size for Fock loop iterations. Default value is 6.
+        fock_diis_min_space : int
             Minimum space of DIIS. Default value is 1.
         os_factor : float
             Opposite-spin factor for spin-component-scaled (SCS)
@@ -491,9 +508,9 @@ class RAGF2(lib.StreamObject):
 
     def __init__(self, mf, frozen=None, mo_energy=None, mo_coeff=None, mo_occ=None):
 
-        if mo_energy is None: mo_energy = mf.mo_energy
-        if mo_coeff  is None: mo_coeff  = mf.mo_coeff
-        if mo_occ    is None: mo_occ    = mf.mo_occ
+        if mo_energy is None: mo_energy = mpi_helper.bcast(mf.mo_energy)
+        if mo_coeff  is None: mo_coeff  = mpi_helper.bcast(mf.mo_coeff)
+        if mo_occ    is None: mo_occ    = mpi_helper.bcast(mf.mo_occ)
 
         self.mol = mf.mol
         self._scf = mf
@@ -509,7 +526,10 @@ class RAGF2(lib.StreamObject):
         self.max_cycle_outer = getattr(__config__, 'agf2_max_cycle_outer', 20)
         self.max_cycle_inner = getattr(__config__, 'agf2_max_cycle_inner', 50)
         self.weight_tol = getattr(__config__, 'agf2_weight_tol', 1e-11)
-        self.diis_space = getattr(__config__, 'agf2_diis_space', 6)
+        self.fock_diis_space = getattr(__config__, 'agf2_diis_space', 6)
+        self.fock_diis_min_space = getattr(__config__, 'agf2_diis_min_space', 1)
+        self.diis = getattr(__config__, 'agf2_diis', True)
+        self.diis_space = getattr(__config__, 'agf2_diis_space', 8)
         self.diis_min_space = getattr(__config__, 'agf2_diis_min_space', 1)
         self.os_factor = getattr(__config__, 'agf2_os_factor', 1.0)
         self.ss_factor = getattr(__config__, 'agf2_ss_factor', 1.0)
@@ -688,6 +708,42 @@ class RAGF2(lib.StreamObject):
 
         return se
 
+    def run_diis(self, se, diis=None):
+        ''' Runs the direct inversion of the iterative subspace for the
+            self-energy.
+
+        Args:
+            se : SelfEnergy
+                Auxiliaries of the self-energy
+            diis : lib.diis.DIIS
+                DIIS object
+
+        Returns:
+            :class:`SelfEnergy`
+        '''
+
+        if diis is None:
+            return se
+
+        se_occ = se.get_occupied()
+        se_vir = se.get_virtual()
+
+        vv_occ = np.dot(se_occ.coupling, se_occ.coupling.T)
+        vv_vir = np.dot(se_vir.coupling, se_vir.coupling.T)
+
+        vev_occ = np.dot(se_occ.coupling * se_occ.energy[None], se_occ.coupling.T)
+        vev_vir = np.dot(se_vir.coupling * se_vir.energy[None], se_vir.coupling.T)
+
+        dat = np.array([vv_occ, vv_vir, vev_occ, vev_vir])
+        dat = diis.update(dat)
+        vv_occ, vv_vir, vev_occ, vev_vir = dat
+
+        se_occ = aux.SelfEnergy(*_agf2.cholesky_build(vv_occ, vev_occ), chempot=se.chempot)
+        se_vir = aux.SelfEnergy(*_agf2.cholesky_build(vv_vir, vev_vir), chempot=se.chempot)
+        se = aux.combine(se_occ, se_vir)
+
+        return se
+
     def energy_nuc(self):
         return self._scf.energy_nuc()
 
@@ -696,15 +752,21 @@ class RAGF2(lib.StreamObject):
         log = logger.new_logger(self, verbose)
         log.info('')
         log.info('******** %s ********', self.__class__)
-        log.info('conv_tol = %g' % self.conv_tol)
-        log.info('conv_tol_rdm1 = %g' % self.conv_tol_rdm1)
-        log.info('conv_tol_nelec = %g' % self.conv_tol_nelec)
-        log.info('max_cycle = %g' % self.max_cycle)
-        log.info('max_cycle_outer = %g' % self.max_cycle_outer)
-        log.info('max_cycle_inner = %g' % self.max_cycle_inner)
-        log.info('weight_tol = %g' % self.weight_tol)
-        log.info('diis_space = %d' % self.diis_space)
+        log.info('conv_tol = %g', self.conv_tol)
+        log.info('conv_tol_rdm1 = %g', self.conv_tol_rdm1)
+        log.info('conv_tol_nelec = %g', self.conv_tol_nelec)
+        log.info('max_cycle = %g', self.max_cycle)
+        log.info('max_cycle_outer = %g', self.max_cycle_outer)
+        log.info('max_cycle_inner = %g', self.max_cycle_inner)
+        log.info('weight_tol = %g', self.weight_tol)
+        log.info('diis = %d', self.diis)
+        log.info('diis_space = %d', self.diis_space)
         log.info('diis_min_space = %d', self.diis_min_space)
+        log.info('fock_diis_space = %d', self.fock_diis_space)
+        log.info('fock_diis_min_space = %d', self.fock_diis_min_space)
+        log.info('os_factor = %g', self.os_factor)
+        log.info('ss_factor = %g', self.ss_factor)
+        log.info('damping = %g', self.damping)
         log.info('nmo = %s', self.nmo)
         log.info('nocc = %s', self.nocc)
         if self.frozen is not None:
@@ -878,7 +940,8 @@ class RAGF2(lib.StreamObject):
 
     @property
     def e_corr(self):
-        return self.e_tot - self._scf.e_tot
+        e_hf = mpi_helper.bcast(self._scf.e_tot)
+        return self.e_tot - e_hf
 
     @property
     def qmo_energy(self):
@@ -934,7 +997,10 @@ class _ChemistsERIs:
         self.h1e = np.dot(np.dot(mo_coeff.conj().T, h1e_ao), mo_coeff)
         self.fock = np.dot(np.dot(mo_coeff.conj().T, fock_ao), mo_coeff)
 
-        self.e_hf = agf2._scf.e_tot
+        self.h1e = mpi_helper.bcast(self.h1e)
+        self.fock = mpi_helper.bcast(self.fock)
+
+        self.e_hf = mpi_helper.bcast(agf2._scf.e_tot)
 
         self.nmo = agf2.nmo
         self.nocc = agf2.nocc
