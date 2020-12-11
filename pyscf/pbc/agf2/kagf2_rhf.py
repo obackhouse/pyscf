@@ -41,6 +41,7 @@ from pyscf.pbc.mp.kmp2 import get_nocc, get_nmo, get_frozen_mask, \
 
 #TODO: memory warning if direct=False
 #TODO: change some allreduce to allgather 
+#TODO: check aft, this may be broken?
 
 
 #NOTE: printing IPs and EAs doesn't work with ragf2 kernel - fix later for better inheritance 
@@ -67,6 +68,15 @@ def kernel(agf2, eri=None, gf=None, se=None, verbose=None, dump_chk=True):
     if dump_chk:
         agf2.dump_chk(gf=gf, se=se)
 
+    if isinstance(agf2.diis, lib.diis.DIIS):
+        diis = agf2.diis
+    elif agf2.diis:
+        diis = lib.diis.DIIS(agf2)
+        diis.space = agf2.diis_space
+        diis.min_space = agf2.diis_min_space
+    else:
+        diis = None
+
     e_init = agf2.energy_mp2(agf2.mo_energy, se)
     log.info('E(init) = %.16g  E_corr(init) = %.16g', e_init+eri.e_hf, e_init)
 
@@ -86,6 +96,7 @@ def kernel(agf2, eri=None, gf=None, se=None, verbose=None, dump_chk=True):
 
         # two-body terms
         se = agf2.build_se(eri, gf, se_prev=se_prev)
+        se = agf2.run_diis(se, diis)
         e_2b = agf2.energy_2body(gf, se)
 
         if dump_chk:
@@ -293,14 +304,14 @@ def build_se_part(agf2, eri, gf_occ, gf_vir, os_factor=1.0, ss_factor=1.0):
     #                    vev[kx] = lib.dot(exija, xjia.T.conj(), alpha=fneg, beta=1, c=vev[kx])
 
 
-    #####NOTE: DIIS hack to be removed or implemented properly - does this even help??
-    if not hasattr(agf2, '_diis'):
-        agf2._diis = [lib.diis.DIIS(agf2), lib.diis.DIIS(agf2)]
-        for x in agf2._diis:
-            x.space = 15
-            x.min_space = 2
-    vv, vev = agf2._diis[int(gf_occ[0].energy[0] >= gf_occ[0].chempot)].update(np.array([vv, vev]))
-    ######################################################################################
+    ######NOTE: DIIS hack to be removed or implemented properly - does this even help??
+    #if not hasattr(agf2, '_diis'):
+    #    agf2._diis = [lib.diis.DIIS(agf2), lib.diis.DIIS(agf2)]
+    #    for x in agf2._diis:
+    #        x.space = 15
+    #        x.min_space = 2
+    #vv, vev = agf2._diis[int(gf_occ[0].energy[0] >= gf_occ[0].chempot)].update(np.array([vv, vev]))
+    #######################################################################################
 
     se = []
     for kx in range(nkpts):
@@ -359,7 +370,8 @@ def get_jk_direct(agf2, eri, rdm1, with_j=True, with_k=True):
         for kik in mpi_helper.nrange(nkpts**2):
             ki, kk = divmod(kik, nkpts)
             kj = ki
-            buf = np.dot(qkl[ki,kj,kk], rdm1[ki].ravel(), out=buf)
+            kl = agf2.khelper.kconserv[ki,kj,kk]
+            buf = np.dot(qkl[ki,kj,kk], rdm1[kl].ravel(), out=buf)
             vj[ki] += np.dot(qij[ki,kj].T.conj(), buf)
 
         vj = vj.reshape(nkpts, nmo, nmo)
@@ -378,12 +390,16 @@ def get_jk_direct(agf2, eri, rdm1, with_j=True, with_k=True):
             ki, kk = divmod(kik, nkpts)
             kj = ki
             kl = agf2.khelper.kconserv[ki,kj,kk]
-            buf = lib.dot(qij[ki,kl].reshape(-1, nmo).conj(), rdm1[ki], c=buf)
+            buf = lib.dot(qij[ki,kl].reshape(-1, nmo).conj(), rdm1[kl], c=buf)
             buf = buf.reshape(-1, nmo, nmo).swapaxes(1,2).reshape(-1, nmo)
             vk[ki] = lib.dot(buf.T, qkl[ki,kl,kk].reshape(-1, nmo), c=vk[ki], beta=1).T   #TODO: should that be .T.conj() ?
 
         mpi_helper.barrier()
         mpi_helper.allreduce_safe_inplace(vk)
+
+        #NOTE: should keep_exxdiv even be considered here?
+        if agf2.keep_exxdiv and agf2._scf.exxdiv == 'ewald':
+            vk += get_ewald(agf2, rdm1)
 
     return vj, vk
 
@@ -428,7 +444,8 @@ def get_jk_incore(agf2, eri, rdm1, with_j=True, with_k=True):
         for kik in mpi_helper.nrange(nkpts**2):
             ki, kk = divmod(kik, nkpts)
             kj = ki
-            vj[ki] += lib.einsum('ijkl,lk->ij', eri[ki,kj,kk], rdm1[ki].conj())
+            kl = agf2.khelper.kconserv[ki,kj,kk]
+            vj[ki] += lib.einsum('ijkl,lk->ij', eri[ki,kj,kk], rdm1[kl].conj())
 
         mpi_helper.barrier()
         mpi_helper.allreduce_safe_inplace(vj)
@@ -443,10 +460,14 @@ def get_jk_incore(agf2, eri, rdm1, with_j=True, with_k=True):
             ki, kk = divmod(kik, nkpts)
             kj = ki
             kl = agf2.khelper.kconserv[ki,kj,kk]
-            vk[ki] += lib.einsum('ilkj,lk->ij', eri[ki,kl,kk], rdm1[ki].conj())
+            vk[ki] += lib.einsum('ilkj,lk->ij', eri[ki,kl,kk], rdm1[kl].conj())
 
         mpi_helper.barrier()
         mpi_helper.allreduce_safe_inplace(vk)
+
+        #NOTE: should keep_exxdiv even be considered here?
+        if agf2.keep_exxdiv and agf2._scf.exxdiv == 'ewald':
+            vk += np.array(get_ewald(agf2, rdm1))
 
     return vj, vk
 
@@ -507,13 +528,23 @@ def get_fock(agf2, eri, gf=None, rdm1=None):
     #assert np.all(np.absolute(np.einsum('kii->ki', vj).imag) < 1e-10)
     #assert np.all(np.absolute(np.einsum('kii->ki', vk).imag) < 1e-10)
 
-    #NOTE: should keep_exxdiv be considered here?
-    if agf2.keep_exxdiv and agf2._scf.exxdiv == 'ewald':
-        vk += get_ewald(agf2, rdm1)
-
     fock = eri.h1e + vj - 0.5 * vk
 
     return fock
+
+
+def adjust_occ(agf2, gf):
+    ''' Modify the occupied energies of the Green's function according
+        to the Madelung constant.
+    '''
+
+    if not agf2.keep_exxdiv:
+        madelung = tools.madelung(agf2.cell, agf2.kpts)
+        for kx in range(agf2.nkpts):
+            occ = gf[kx].energy < gf[kx].chempot
+            gf[kx].energy[occ] -= madelung
+
+    return gf
 
 
 #NOTE: padding should not affect the nelec, because the padded elements will be zero
@@ -550,6 +581,7 @@ def fock_loop(agf2, eri, gf, se, nelec_per_kpt=None):
     diis.space = agf2.diis_space
     diis.min_space = agf2.diis_min_space
     fock = agf2.get_fock(eri, gf)
+    madelung = tools.madelung(agf2.cell, agf2.kpts)
 
     if nelec_per_kpt is None:
         nelec_per_kpt = np.array(get_nocc(agf2, per_kpoint=True)) * 2
@@ -578,6 +610,12 @@ def fock_loop(agf2, eri, gf, se, nelec_per_kpt=None):
                 w, v = se[kx].eig(fock[kx])
                 gf[kx] = aux.GreensFunction(w, v[:nmo], chempot=se[kx].chempot)
                 gf[kx].remove_uncoupled(tol=agf2.weight_tol)
+
+                #w, v = se[kx].eig(fock[kx])
+                #se[kx].chempot, nerr_kpt = binsearch_chempot((w, v), nmo, nelec)
+                #nerr = nerr_kpt.real if abs(nerr_kpt.real) > nerr else nerr
+                #gf[kx] = aux.GreensFunction(w, v[:nmo], chempot=se[kx].chempot)
+                #gf[kx].remove_uncoupled(tol=agf2.weight_tol)
 
             fock = agf2.get_fock(eri, gf)
             rdm1 = agf2.make_rdm1(gf)
@@ -724,13 +762,14 @@ class KRAGF2(ragf2.RAGF2):
         self.max_cycle_outer = getattr(__config__, 'pbc_agf2_max_cycle_outer', 20)
         self.max_cycle_inner = getattr(__config__, 'pbc_agf2_max_cycle_inner', 50)
         self.weight_tol = getattr(__config__, 'pbc_agf2_weight_tol', 1e-11)
-        self.diis_space = getattr(__config__, 'pbc_agf2_diis_space', 6)
+        self.diis = getattr(__config__, 'agf2_diis', True)
+        self.diis_space = getattr(__config__, 'pbc_agf2_diis_space', 8)
         self.diis_min_space = getattr(__config__, 'pbc_agf2_diis_min_space', 1)
         self.os_factor = getattr(__config__, 'pbc_agf2_os_factor', 1.0)
         self.ss_factor = getattr(__config__, 'pbc_agf2_ss_factor', 1.0)
         self.damping = getattr(__config__, 'pbc_agf2_damping', 0.0)
         self.direct = getattr(__config__, 'pbc_agf2_direct', True)
-        self.keep_exxdiv = getattr(__config__, 'pbc_agf2_keep_exxdiv', False)
+        self.keep_exxdiv = getattr(__config__, 'pbc_agf2_keep_exxdiv', True)
 
         self.mo_energy = mo_energy
         self.mo_coeff = mo_coeff
@@ -761,6 +800,10 @@ class KRAGF2(ragf2.RAGF2):
             eri = _make_mo_eris_direct(self, mo_coeff)
         else:
             eri = _make_mo_eris_incore(self, mo_coeff)
+
+        #FIXME: make G0 be built with the corrected mo_energy from _ERIs
+        self.mo_energy = eri.mo_energy
+        self.mo_coeff = eri.mo_coeff
 
         return eri
 
@@ -854,12 +897,12 @@ class KRAGF2(ragf2.RAGF2):
 
         fock = self.get_fock(eri, gf)
 
-        se = []
+        gf = []
 
         for s, f in zip(se, fock):
-            se.append(s.get_greens_function(f))
+            gf.append(s.get_greens_function(f))
 
-        return se
+        return gf
 
     def build_se(self, eri=None, gf=None, os_factor=None, ss_factor=None, se_prev=None):
         ''' Builds the auxiliaries of the self-energy at each k-point.
@@ -902,6 +945,14 @@ class KRAGF2(ragf2.RAGF2):
                                   'no (i,j,a) or (a,b,i) configurations at '
                                   'k-point %d', kx)
 
+        #FIXME doesn't work
+        #if not self.keep_exxdiv:
+        #    madelung = tools.madelung(self.cell, self.kpts)
+        #    for kx in range(self.nkpts):
+        #        gf_occ[kx].energy -= madelung
+        #        chempot = 0.5 * (gf_occ[kx].energy.max() + gf_vir[kx].energy.min())
+        #        gf_occ[kx].chempot = gf_vir[kx].chempot = chempot
+
         se_occ = self.build_se_part(eri, gf_occ, gf_vir, **facs)
         se_vir = self.build_se_part(eri, gf_vir, gf_occ, **facs)
         se = [aux.combine(o, v) for o,v in zip(se_occ, se_vir)]
@@ -928,6 +979,45 @@ class KRAGF2(ragf2.RAGF2):
                 se[kx] = aux.combine(se_occ, se_vir)
 
         return se
+
+    def run_diis(self, se, diis=None):
+        ''' Runs the direct inversion of the iterative subspace for the
+            self-energy.
+
+        Args:
+            se : list of SelfEnergy
+                Auxiliaries of the self-energy at each k-point
+            diis : lib.diis.DIIS
+                DIIS object
+
+        Returns:
+            :class:`SelfEnergy` at each k-point
+        '''
+
+        if diis is None:
+            return se
+
+        se_occ = [x.get_occupied() for x in se]
+        se_vir = [x.get_virtual() for x in se]
+
+        vv_occ = [x.moment(0) for x in se_occ]
+        vv_vir = [x.moment(0) for x in se_vir]
+
+        vev_occ = [x.moment(1) for x in se_occ]
+        vev_vir = [x.moment(1) for x in se_vir]
+
+        dat = np.array([vv_occ, vv_vir, vev_occ, vev_vir])
+        dat = diis.update(dat)
+        vv_occ, vv_vir, vev_occ, vev_vir = dat
+
+        se_out = []
+        for kx in range(self.nkpts):
+            chempot = se[kx].chempot
+            se_occ = aux.SelfEnergy(*_agf2.cholesky_build(vv_occ[kx], vev_occ[kx]), chempot=chempot)
+            se_vir = aux.SelfEnergy(*_agf2.cholesky_build(vv_vir[kx], vev_vir[kx]), chempot=chempot)
+            se_out.append(aux.combine(se_occ, se_vir))
+
+        return se_out
 
 
     def dump_flags(self, verbose=None):
@@ -1046,6 +1136,10 @@ class KRAGF2(ragf2.RAGF2):
 
         e_ip = np.asarray(e_ip)
         v_ip = np.asarray(v_ip)
+
+        if not self.keep_exxdiv:
+            madelung = tools.madelung(self.cell, self.kpts)
+            e_ip += madelung
 
         if nroots == 1:
             return e_ip.reshape(self.nkpts,), v_ip.reshape(self.nkpts, self.nmo)
@@ -1174,6 +1268,13 @@ class _ChemistsERIs:
         self.mo_coeff = padded_mo_coeff(agf2, mo_coeff)
         self.mo_energy = padded_mo_energy(agf2, agf2.mo_energy)
 
+        self.nmo = get_nmo(agf2, per_kpoint=False)
+        self.nocc = get_nocc(agf2, per_kpoint=False)
+
+        self.nonzero_padding = padding_k_idx(agf2, kind='joint')
+        self.mol = self.cell = agf2.cell
+        self.kpts = agf2.kpts
+
         dm = agf2._scf.make_rdm1(agf2.mo_coeff, agf2.mo_occ)
         exxdiv = agf2._scf.exxdiv if agf2.keep_exxdiv else None
         with lib.temporary_env(agf2._scf, exxdiv=exxdiv):
@@ -1189,17 +1290,11 @@ class _ChemistsERIs:
 
         if not agf2.keep_exxdiv:
             madelung = tools.madelung(agf2.cell, agf2.kpts)
-            self.mo_energy = [_adjust_occ(mo_e, agf2.nocc, -madelung) 
+            self.mo_energy = [f.diagonal().real for f in self.fock]
+            self.mo_energy = [_adjust_occ(mo_e, self.nocc, -madelung) 
                               for k, mo_e in enumerate(self.mo_energy)]
 
         self.e_hf = agf2._scf.e_tot
-
-        self.nmo = get_nmo(agf2, per_kpoint=False)
-        self.nocc = get_nocc(agf2, per_kpoint=False)
-
-        self.nonzero_padding = padding_k_idx(agf2, kind='joint')
-        self.mol = self.cell = agf2.cell
-        self.kpts = agf2.kpts
 
 
 #TODO dtype - do we just inherit the mo_coeff.dtype or use np.result_type(eri, mo_coeff) ?
@@ -1504,14 +1599,14 @@ def _make_mo_eris_direct(agf2, mo_coeff=None):
     if mo_coeff is None:
         mo_coeff = eris.mo_coeff
 
-    if type(with_df) is df.FFTDF:
-        bra, ket = _make_ao_eris_direct_fftdf(agf2, eris)
-    elif type(with_df) is df.AFTDF:
-        bra, ket = _make_ao_eris_direct_aftdf(agf2, eris)
-    elif type(with_df) is df.GDF:
-        bra, ket = _make_ao_eris_direct_gdf(agf2, eris)
-    elif type(with_df) is df.MDF:
+    if isinstance(with_df, df.MDF):
         bra, ket = _make_ao_eris_direct_mdf(agf2, eris)
+    elif isinstance(with_df, df.GDF):
+        bra, ket = _make_ao_eris_direct_gdf(agf2, eris)
+    elif isinstance(with_df, df.AFTDF):
+        bra, ket = _make_ao_eris_direct_aftdf(agf2, eris)
+    elif isinstance(with_df, df.FFTDF):
+        bra, ket = _make_ao_eris_direct_fftdf(agf2, eris)
     else:
         raise ValueError('Unknown DF type %s' % type(with_df))
 
@@ -1679,6 +1774,37 @@ def ft_loop(self, mesh=None, q=np.zeros(3), kpts=None, shls_slice=None,
 
             yield buf, q0, q1
 
+    #NOTE: block of code for ft_loop without prange on each process:
+    #buf = np.empty(nkpts*nij*(stop-start)*comp, dtype=np.complex128)
+
+    #dat = ft_ao._ft_aopair_kpts(cell, Gv[start:stop], shls_slice, aosym,
+    #                            b, gxyz[start:stop], Gvbase, q, kpts,
+    #                            intor, comp, out=buf)
+
+    #dat = dat.reshape(nkpts*comp*(stop-start), -1)
+
+    #q1 = 0
+    #for nproc in range(size):
+    #    mpi_helper.barrier()
+
+    #    shape, dtype = mpi_helper.comm.bcast((dat.shape, dat.dtype))
+
+    #    if nproc == rank:
+    #        buf = dat
+    #    else:
+    #        buf = np.empty(shape, dtype=dtype)
+
+    #    buf = mpi_helper.bcast(buf, root=nproc)
+
+    #    blk = shape[0] // (nkpts*comp)
+    #    buf = buf.reshape(nkpts, comp, blk, -1)
+    #    q0, q1 = q1, q1 + blk
+
+    #    if comp == 1:
+    #        buf = np.squeeze(buf, axis=1)
+
+    #    yield buf, q0, q1
+
 
 
 if __name__ == '__main__':
@@ -1690,14 +1816,14 @@ if __name__ == '__main__':
         gf2.direct = False
         eri = gf2.ao2mo()
 
-        if type(gf2.with_df) == df.FFTDF:
-            bra, ket = _make_ao_eris_direct_fftdf(gf2, eri)
-        elif type(gf2.with_df) == df.AFTDF:
-            bra, ket = _make_ao_eris_direct_aftdf(gf2, eri)
-        elif type(gf2.with_df) == df.GDF:
-            bra, ket = _make_ao_eris_direct_gdf(gf2, eri)
-        elif type(gf2.with_df) == df.MDF:
+        if isinstance(gf2.with_df, df.MDF):
             bra, ket = _make_ao_eris_direct_mdf(gf2, eri)
+        elif isinstance(gf2.with_df, df.GDF):
+            bra, ket = _make_ao_eris_direct_gdf(gf2, eri)
+        elif isinstance(gf2.with_df, df.AFTDF):
+            bra, ket = _make_ao_eris_direct_aftdf(gf2, eri)
+        elif isinstance(gf2.with_df, df.FFTDF):
+            bra, ket = _make_ao_eris_direct_fftdf(gf2, eri)
         ao0 = np.einsum('ablp,abclq->abcpq', bra.conj(), ket).reshape((gf2.nkpts,)*3 + (gf2.nmo,)*4)
         ao1 = rhf.with_df.ao2mo_7d(np.asarray([[np.eye(gf2.nmo),]*gf2.nkpts]*4), kpts=rhf.kpts) / len(rhf.kpts)
 
@@ -1734,67 +1860,18 @@ if __name__ == '__main__':
         print('K', np.allclose(vk0, vk1), np.allclose(vk0, vk2), np.linalg.norm(vk0-vk1), np.linalg.norm(vk0-vk2))
 
 
-    #NOTE: block of code for ft_loop without prange on each process:
-    #buf = np.empty(nkpts*nij*(stop-start)*comp, dtype=np.complex128)
-
-    #dat = ft_ao._ft_aopair_kpts(cell, Gv[start:stop], shls_slice, aosym,
-    #                            b, gxyz[start:stop], Gvbase, q, kpts,
-    #                            intor, comp, out=buf)
-
-    #dat = dat.reshape(nkpts*comp*(stop-start), -1)
-
-    #q1 = 0
-    #for nproc in range(size):
-    #    mpi_helper.barrier()
-
-    #    shape, dtype = mpi_helper.comm.bcast((dat.shape, dat.dtype))
-
-    #    if nproc == rank:
-    #        buf = dat
-    #    else:
-    #        buf = np.empty(shape, dtype=dtype)
-
-    #    buf = mpi_helper.bcast(buf, root=nproc)
-
-    #    blk = shape[0] // (nkpts*comp)
-    #    buf = buf.reshape(nkpts, comp, blk, -1)
-    #    q0, q1 = q1, q1 + blk
-
-    #    if comp == 1:
-    #        buf = np.squeeze(buf, axis=1)
-
-    #    yield buf, q0, q1
-
-
-
-    class KRHF(scf.KRHF):
-        def __init__(self, *args, **kwargs):
-            scf.KRHF.__init__(self, *args, **kwargs)
-            self._hcore = None
-            self._energy_nuc = None
-            self._keys.update(['_hcore', '_energy_nuc'])
-
-        def get_hcore(self, *args, **kwargs):
-            if self._hcore is None:
-                self._hcore = scf.KRHF.get_hcore(self, *args, **kwargs)
-            return self._hcore
-
-        def energy_nuc(self, *args, **kwargs):
-            if self._energy_nuc is None:
-                self._energy_nuc = scf.KRHF.energy_nuc(self, *args, **kwargs)
-            return self._energy_nuc
-
-
-    from types import MethodType
-
     from ase.lattice import bulk
     from pyscf.pbc.tools import pyscf_ase
+    from pyscf_cache import pyscf_cache
+
+    pyscf_cache.apply_cache()
 
     cell = gto.C(atom='He 1 0 1; He 0 0 1', 
                  basis='6-31g', 
                  a=np.eye(3)*3, 
-                 mesh=[30,]*3,
+                 #mesh=[20,]*3,
                  #ke_cutoff=100,
+                 precision=1e-8,
                  verbose=3 if mpi_helper.rank == 0 else 0)
 
     #cell = gto.C(unit = 'B',
@@ -1810,27 +1887,24 @@ if __name__ == '__main__':
     #             basis = 'gth-szv')
 
     ase_atom = bulk('Si', 'diamond', a=5.43102)
-    cell = gto.Cell()
+    cell = pyscf_cache.Cell()
     cell.atom = pyscf_ase.ase_atoms_to_pyscf(ase_atom)
     cell.a = ase_atom.cell[:]
     cell.max_memory = 20000
     cell.basis = 'gth-szv'
     cell.pseudo = 'gth-pade'
-    #cell.exp_to_discard = 0.1
+    cell.precision = 1e-8
+    cell.exp_to_discard = 0.1
     cell.verbose = 4 if mpi_helper.rank == 0 else 0
     cell.build()
 
-    rhf = KRHF(cell)
-    rhf.with_df = df.MDF(cell)
-    old_ft_loop = rhf.with_df.ft_loop
-    rhf.with_df.ft_loop = MethodType(ft_loop, rhf.with_df)
-    rhf.conv_tol = 1e-10
+    rhf = pyscf_cache.KRHF(cell)
+    #rhf.with_df = pyscf_cache.MDF(cell)
+    rhf.with_df = df.FFTDF(cell)
     rhf.exxdiv = 'ewald'
-    rhf.kpts = cell.make_kpts([1,1,1])
+    rhf.kpts = cell.make_kpts([1,1,2])
 
     rhf.run()
-
-    rhf.with_df.ft_loop = old_ft_loop
 
     #test_eri(rhf)
     #test_fock(rhf)
@@ -1842,11 +1916,11 @@ if __name__ == '__main__':
     #gf2a.run()
 
     gf2b = KRAGF2(rhf)
-    gf2b.direct = True
-    gf2b.damping = 0.0
+    gf2b.direct = False
     gf2b.conv_tol = 1e-6
     gf2b.max_cycle = 30
     gf2b.keep_exxdiv = True
+    gf2b.damping = 0.5
     gf2b.run()
 
     #mp2 = mp.KMP2(rhf)
