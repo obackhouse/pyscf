@@ -16,10 +16,6 @@
 #         George H. Booth <george.booth@kcl.ac.uk>
 #
 
-import warnings
-import h5py
-warnings.simplefilter('ignore', h5py.h5py_warnings.H5pyDeprecationWarning)
-
 '''
 k-point adapted Auxiliary second-order Green's function perturbation theory
 '''
@@ -31,17 +27,22 @@ from pyscf import lib
 from pyscf.lib import logger
 from pyscf import __config__
 from pyscf import ao2mo
-from pyscf.pbc import tools, df
+from pyscf.pbc import tools
 from pyscf.pbc.lib import kpts_helper
-from pyscf.pbc.cc.ccsd import _adjust_occ
+from pyscf.pbc.agf2 import kragf2_ao2mo
 from pyscf.agf2 import aux, ragf2, _agf2, mpi_helper
 from pyscf.agf2.chempot import binsearch_chempot, minimize_chempot
 from pyscf.pbc.mp.kmp2 import get_nocc, get_nmo, get_frozen_mask, \
-                              padding_k_idx, padded_mo_coeff, padded_mo_energy
+                              padded_mo_coeff, padded_mo_energy
 
 #TODO: memory warning if direct=False
 #TODO: change some allreduce to allgather 
 #TODO: check aft, this may be broken?
+#TODO: remove build_gf from this and molecular code
+#TODO: fix kernel buf with self in this and molecular code
+#TODO: change agf2 object to gf2 and molecular code
+#TODO: fix molecular code DIIS to use the Aux.moment function
+#TODO: should we track convergence via etot?
 
 
 #NOTE: printing IPs and EAs doesn't work with ragf2 kernel - fix later for better inheritance 
@@ -57,13 +58,10 @@ def kernel(agf2, eri=None, gf=None, se=None, verbose=None, dump_chk=True):
     if verbose is None: verbose = agf2.verbose
 
     if gf is None:
-        gf = agf2.init_gf()
-        gf_froz = agf2.init_gf(frozen=True)
-    else:
-        gf_froz = gf
+        gf = agf2.init_gf(eri)
 
     if se is None:
-        se = agf2.build_se(eri, gf_froz)
+        se = agf2.build_se(eri, gf)
 
     if dump_chk:
         agf2.dump_chk(gf=gf, se=se)
@@ -160,8 +158,8 @@ def build_se_part(agf2, eri, gf_occ, gf_vir, os_factor=1.0, ss_factor=1.0):
     cput0 = (time.clock(), time.time())
     log = logger.Logger(agf2.stdout, agf2.verbose)
 
-    nkpts = len(gf_occ)
-    nmo_per_kpt = [x.nphys for x in gf_occ]  # should be padded, but this supports point-group symmetry
+    nkpts = agf2.nkpts
+    nmo = agf2.nmo
     tol = agf2.weight_tol
     facs = dict(os_factor=os_factor, ss_factor=ss_factor)
 
@@ -169,21 +167,23 @@ def build_se_part(agf2, eri, gf_occ, gf_vir, os_factor=1.0, ss_factor=1.0):
     kconserv = khelper.kconserv
 
     if isinstance(eri.eri, tuple):
-        fmo2qmo = _make_qmo_eris_direct
+        fmo2qmo = kragf2_ao2mo._make_qmo_eris_direct
     else:
-        fmo2qmo = _make_qmo_eris_incore
+        fmo2qmo = kragf2_ao2mo._make_qmo_eris_incore
 
-    vv = [np.zeros((nmo, nmo), dtype=np.complex128) for nmo in nmo_per_kpt]
-    vev = [np.zeros((nmo, nmo), dtype=np.complex128) for nmo in nmo_per_kpt]
+    vv = np.zeros((nkpts, nmo, nmo), dtype=np.complex128)
+    vev = np.zeros((nkpts, nmo, nmo), dtype=np.complex128)
 
     fpos = os_factor + ss_factor
     fneg = -ss_factor
 
     #NOTE: we can loop over x,i,j and determine a, or x,i,a and determine j. The former requires oo+vv
-    # operations with o(o+1)/2 + v(v+1)/2 intermediates, the latter requires 2ia operations and intermediates.
+    # operations with o(o+1)/2 + v(v+1)/2 intermediates, the latter requires 2ov operations and intermediates.
     # I think the latter is better and also gives a more reliable platform for parallelism.
 
     if isinstance(eri.eri, (tuple, list)):
+        naux = agf2.naux
+
         for kxia in mpi_helper.nrange(nkpts**3):
             kxi, ka = divmod(kxia, nkpts)
             kx, ki = divmod(kxi, nkpts)
@@ -192,11 +192,9 @@ def build_se_part(agf2, eri, gf_occ, gf_vir, os_factor=1.0, ss_factor=1.0):
             ci, ei, ni = gf_occ[ki].coupling, gf_occ[ki].energy, gf_occ[ki].naux
             cj, ej, nj = gf_occ[kj].coupling, gf_occ[kj].energy, gf_occ[kj].naux
             ca, ea, na = gf_vir[ka].coupling, gf_vir[ka].energy, gf_vir[ka].naux
-            nmo = nmo_per_kpt[kx]
 
             qxi, qja = fmo2qmo(agf2, eri, (ci,cj,ca), (kx,ki,kj,ka))
             qxj, qia = fmo2qmo(agf2, eri, (cj,ci,ca), (kx,kj,ki,ka))
-            naux = qxi.shape[0]
             eja = lib.direct_sum('j,a->ja', ej, -ea).ravel()
 
             #TODO: mesh can be large - block the dot products
@@ -223,7 +221,6 @@ def build_se_part(agf2, eri, gf_occ, gf_vir, os_factor=1.0, ss_factor=1.0):
             ci, ei, ni = gf_occ[ki].coupling, gf_occ[ki].energy, gf_occ[ki].naux
             cj, ej, nj = gf_occ[kj].coupling, gf_occ[kj].energy, gf_occ[kj].naux
             ca, ea, na = gf_vir[ka].coupling, gf_vir[ka].energy, gf_vir[ka].naux
-            nmo = nmo_per_kpt[kx]
 
             pija = fmo2qmo(agf2, eri, (ci,cj,ca), (kx,ki,kj,ka))
             pjia = fmo2qmo(agf2, eri, (cj,ci,ca), (kx,kj,ki,ka))
@@ -246,72 +243,6 @@ def build_se_part(agf2, eri, gf_occ, gf_vir, os_factor=1.0, ss_factor=1.0):
     for kx in range(nkpts):
         mpi_helper.allreduce_safe_inplace(vv[kx])
         mpi_helper.allreduce_safe_inplace(vev[kx])
-
-
-    #for kx in range(nkpts):
-    #    for ki in range(nkpts):
-    #        for ka in range(nkpts):
-    #            kj = kconserv[kx,ki,ka]
-
-    #            ci, ei = gf_occ[ki].coupling, gf_occ[ki].energy
-    #            cj, ej = gf_occ[kj].coupling, gf_occ[kj].energy
-    #            ca, ea = gf_vir[ka].coupling, gf_vir[ka].energy
-
-    #            ni = ei.size
-    #            nj = ej.size
-    #            na = ea.size
-    #            nmo = nmo_per_kpt[kx]
-
-    #            if isinstance(eri.eri, (tuple, list)):
-    #                qxi, qja = fmo2qmo(agf2, eri, (ci,cj,ca), (kx,ki,kj,ka))
-    #                qxj, qia = fmo2qmo(agf2, eri, (cj,ci,ca), (kx,kj,ki,ka))
-    #                naux = qxi.shape[0]
-    #                eja = lib.direct_sum('j,a->ja', ej, -ea).ravel()
-
-    #                for i in range(ni):
-    #                    qx = np.array(qxi.reshape(naux, nmo, ni)[:,:,i])
-    #                    xija = lib.dot(qx.T.conj(), qja)
-    #                    xjia = lib.dot(qxj.T.conj(), np.array(qia[:,i*na:(i+1)*na]))
-    #                    xjia = xjia.reshape(nmo, nj*na)
-
-    #                    eija = eja + ei[i]
-
-    #                    vv[kx] = lib.dot(xija, xija.T.conj(), alpha=fpos, beta=1, c=vv[kx])
-    #                    vv[kx] = lib.dot(xija, xjia.T.conj(), alpha=fneg, beta=1, c=vv[kx])
-
-    #                    exija = xija * eija[None]
-
-    #                    vev[kx] = lib.dot(exija, xija.T.conj(), alpha=fpos, beta=1, c=vev[kx])
-    #                    vev[kx] = lib.dot(exija, xjia.T.conj(), alpha=fneg, beta=1, c=vev[kx])
-
-    #            else:
-    #                pija = fmo2qmo(agf2, eri, (ci,cj,ca), (kx,ki,kj,ka))
-    #                pjia = fmo2qmo(agf2, eri, (cj,ci,ca), (kx,kj,ki,ka))
-    #                eja = lib.direct_sum('j,a->ja', ej, -ea).ravel()
-
-    #                for i in range(ni):
-    #                    xija = np.array(pija[:,i].reshape(nmo, -1))
-    #                    xjia = np.array(pjia[:,:,i].reshape(nmo, -1))
-
-    #                    eija = eja + ei[i]
-
-    #                    vv[kx] = lib.dot(xija, xija.T.conj(), alpha=fpos, beta=1, c=vv[kx])
-    #                    vv[kx] = lib.dot(xija, xjia.T.conj(), alpha=fneg, beta=1, c=vv[kx])
-
-    #                    exija = xija * eija[None]
-
-    #                    vev[kx] = lib.dot(exija, xija.T.conj(), alpha=fpos, beta=1, c=vev[kx])
-    #                    vev[kx] = lib.dot(exija, xjia.T.conj(), alpha=fneg, beta=1, c=vev[kx])
-
-
-    ######NOTE: DIIS hack to be removed or implemented properly - does this even help??
-    #if not hasattr(agf2, '_diis'):
-    #    agf2._diis = [lib.diis.DIIS(agf2), lib.diis.DIIS(agf2)]
-    #    for x in agf2._diis:
-    #        x.space = 15
-    #        x.min_space = 2
-    #vv, vev = agf2._diis[int(gf_occ[0].energy[0] >= gf_occ[0].chempot)].update(np.array([vv, vev]))
-    #######################################################################################
 
     se = []
     for kx in range(nkpts):
@@ -349,7 +280,7 @@ def get_jk_direct(agf2, eri, rdm1, with_j=True, with_k=True):
         if either are not requested then they are set to None.
     '''
 
-    nkpts = len(rdm1)
+    nkpts = agf2.nkpts
     nmo = agf2.nmo
     naux = eri[0].shape[2]
     dtype = np.result_type(eri[0].dtype, eri[1].dtype, *[x.dtype for x in rdm1])
@@ -364,9 +295,6 @@ def get_jk_direct(agf2, eri, rdm1, with_j=True, with_k=True):
         vj = np.zeros((nkpts, nmo*nmo), dtype=dtype)
         buf = np.zeros((naux), dtype=dtype)
 
-        #for ki in range(nkpts):
-        #    kj = ki
-        #    for kk in range(nkpts):
         for kik in mpi_helper.nrange(nkpts**2):
             ki, kk = divmod(kik, nkpts)
             kj = ki
@@ -383,9 +311,6 @@ def get_jk_direct(agf2, eri, rdm1, with_j=True, with_k=True):
         vk = np.zeros((nkpts, nmo, nmo), dtype=dtype)
         buf = np.zeros((naux*nmo, nmo), dtype=dtype)
 
-        #for ki in range(nkpts):
-        #    kj = ki
-        #    for kk in range(nkpts):
         for kik in mpi_helper.nrange(nkpts**2):
             ki, kk = divmod(kik, nkpts)
             kj = ki
@@ -438,9 +363,6 @@ def get_jk_incore(agf2, eri, rdm1, with_j=True, with_k=True):
     if with_j:
         vj = np.zeros((nkpts, nmo, nmo), dtype=dtype)
 
-        #for ki in range(nkpts):
-        #    kj = ki
-        #    for kk in range(nkpts):
         for kik in mpi_helper.nrange(nkpts**2):
             ki, kk = divmod(kik, nkpts)
             kj = ki
@@ -453,9 +375,6 @@ def get_jk_incore(agf2, eri, rdm1, with_j=True, with_k=True):
     if with_k:
         vk = np.zeros((nkpts, nmo, nmo), dtype=dtype)
 
-        #for ki in range(nkpts):
-        #    kj = ki
-        #    for kk in range(nkpts):
         for kik in mpi_helper.nrange(nkpts**2):
             ki, kk = divmod(kik, nkpts)
             kj = ki
@@ -523,16 +442,12 @@ def get_fock(agf2, eri, gf=None, rdm1=None):
         rdm1 = agf2.make_rdm1(gf)
 
     vj, vk = agf2.get_jk(eri.eri, rdm1)
-    #NOTE: AFTDF seemed to have relatively large hermiticity errors on the diagonal? #NOTE this may be fixed
-    #assert np.all(np.absolute(np.einsum('kii->ki', rdm1).imag) < 1e-10)
-    #assert np.all(np.absolute(np.einsum('kii->ki', vj).imag) < 1e-10)
-    #assert np.all(np.absolute(np.einsum('kii->ki', vk).imag) < 1e-10)
-
     fock = eri.h1e + vj - 0.5 * vk
 
     return fock
 
 
+#TODO: remove?
 def adjust_occ(agf2, gf):
     ''' Modify the occupied energies of the Green's function according
         to the Madelung constant.
@@ -602,6 +517,7 @@ def fock_loop(agf2, eri, gf, se, nelec_per_kpt=None):
             nerr = 0
 
             for kx in range(nkpts):
+                #TODO: remove this repeated eig, and in molecular code
                 nelec = nelec_per_kpt[kx]
                 w, v = se[kx].eig(fock[kx], chempot=0.0)
                 se[kx].chempot, nerr_kpt = binsearch_chempot((w, v), nmo, nelec)
@@ -797,13 +713,9 @@ class KRAGF2(ragf2.RAGF2):
         '''
 
         if self.direct:
-            eri = _make_mo_eris_direct(self, mo_coeff)
+            eri = kragf2_ao2mo._make_mo_eris_direct(self, mo_coeff)
         else:
-            eri = _make_mo_eris_incore(self, mo_coeff)
-
-        #FIXME: make G0 be built with the corrected mo_energy from _ERIs
-        self.mo_energy = eri.mo_energy
-        self.mo_coeff = eri.mo_coeff
+            eri = kragf2_ao2mo._make_mo_eris_incore(self, mo_coeff)
 
         return eri
 
@@ -843,6 +755,7 @@ class KRAGF2(ragf2.RAGF2):
         if mo_energy is None: mo_energy = self.mo_energy
         if se is None: se = self.build_se(gf=self.gf)
 
+        #TODO: should this be the adjusted/exxdiv energies?
         mo_energy = padded_mo_energy(self, mo_energy)
 
         self.e_init = energy_mp2(self, mo_energy, se)
@@ -851,25 +764,36 @@ class KRAGF2(ragf2.RAGF2):
 
     #TODO: perhaps this would be best c.f. frozen where we can have padded coupled to non-padded?
     #TODO: frozen
-    def init_gf(self, frozen=False):
+    def init_gf(self, eri=None):
         ''' Builds the Hartree-Fock Green's function.
+
+        Kwargs:
+            eri : _ChemistsERIs
+                Electronic repulsion integrals
 
         Returns:
             :class:`GreensFunction`, :class:`SelfEnergy`
         '''
 
-        energy = padded_mo_energy(self, self.mo_energy)
-        coupling = np.eye(self.nmo)
+        if eri is None: eri = self.ao2mo()
+
+        nkpts = self.nkpts
+        nmo = self.nmo
         nocc = get_nocc(self, per_kpoint=True)
+        energy = padded_mo_energy(self, eri.mo_energy)
+        coupling = np.eye(nmo)
 
         gf = []
 
-        for kx in range(self.nkpts):
-            try:
-                chempot = binsearch_chempot(np.diag(energy[kx]), self.nmo, nocc[kx]*2)[0]
-            except IndexError as e:  #TODO: fix this, I think nocc=0 or nvir=0 is feasible in k-space?
-                print(e)
-                chempot = 0.0
+        for kx in range(nkpts):
+            #FIXME: I think that we need this because in k-space we can have fully occ or fully vir?
+            if nocc[kx] == 0:
+                chempot = energy[0] - 1e-6
+            elif nocc[kx] == nmo:
+                chempot = energy[-1] + 1e-6
+            else:
+                chempot = binsearch_chempot(np.diag(energy[kx]), nmo, nocc[kx]*2)[0]
+
             gf.append(aux.GreensFunction(energy[kx], coupling, chempot=chempot))
 
         return gf
@@ -892,7 +816,7 @@ class KRAGF2(ragf2.RAGF2):
 
         if eri is None: eri = self.ao2mo()
         if gf is None: gf = self.gf
-        if gf is None: gf = self.init_gf()
+        if gf is None: gf = self.init_gf(eri)
         if se is None: se = self.build_se(eri, gf)
 
         fock = self.get_fock(eri, gf)
@@ -930,7 +854,7 @@ class KRAGF2(ragf2.RAGF2):
 
         if eri is None: eri = self.ao2mo()
         if gf is None: gf = self.gf
-        if gf is None: gf = self.init_gf()
+        if gf is None: gf = self.init_gf(eri)
 
         if os_factor is None: os_factor = self.os_factor
         if ss_factor is None: ss_factor = self.ss_factor
@@ -1077,13 +1001,10 @@ class KRAGF2(ragf2.RAGF2):
         if se is None: se = self.se
 
         if gf is None:
-            gf = self.init_gf()
-            gf_froz = self.init_gf(frozen=True)
-        else:
-            gf_froz = gf
+            gf = self.init_gf(eri)
 
         if se is None:
-            se = self.build_se(eri, gf_froz)
+            se = self.build_se(eri, gf)
 
         self.converged, self.e_1b, self.e_2b, self.gf, self.se = \
                 kernel(self, eri=eri, gf=gf, se=se, verbose=self.verbose, dump_chk=dump_chk)
@@ -1240,575 +1161,11 @@ class KRAGF2(ragf2.RAGF2):
         return qmo_occ
 
 
-
-#TODO: parallelise get_hcore and get_veff
-class _ChemistsERIs:
-    ''' (pq|rs)
-
-    Stored as (pq|J)(J|rs) if agf2.direct is True.
-    '''
-
-    def __init__(self, cell=None):
-        self.mol = self.cell = cell
-        self.mo_coeff = None
-        self.nmo = None
-        self.nocc = None
-        self.kpts = None
-        self.nonzero_padding = None
-
-        self.fock = None
-        self.h1e = None
-        self.eri = None
-        self.e_hf = None
-
-    def _common_init_(self, agf2, mo_coeff=None):
-        if mo_coeff is None:
-            mo_coeff = agf2.mo_coeff
-
-        self.mo_coeff = padded_mo_coeff(agf2, mo_coeff)
-        self.mo_energy = padded_mo_energy(agf2, agf2.mo_energy)
-
-        self.nmo = get_nmo(agf2, per_kpoint=False)
-        self.nocc = get_nocc(agf2, per_kpoint=False)
-
-        self.nonzero_padding = padding_k_idx(agf2, kind='joint')
-        self.mol = self.cell = agf2.cell
-        self.kpts = agf2.kpts
-
-        dm = agf2._scf.make_rdm1(agf2.mo_coeff, agf2.mo_occ)
-        exxdiv = agf2._scf.exxdiv if agf2.keep_exxdiv else None
-        with lib.temporary_env(agf2._scf, exxdiv=exxdiv):
-            h1e_ao = agf2._scf.get_hcore()
-            veff_ao = agf2._scf.get_veff(agf2.cell, dm)
-            fock_ao = h1e_ao + veff_ao
-
-        self.h1e = []
-        self.fock = []
-        for ki, ci in enumerate(self.mo_coeff):
-            self.h1e.append(np.dot(np.dot(ci.conj().T, h1e_ao[ki]), ci))
-            self.fock.append(np.dot(np.dot(ci.conj().T, fock_ao[ki]), ci))
-
-        if not agf2.keep_exxdiv:
-            madelung = tools.madelung(agf2.cell, agf2.kpts)
-            self.mo_energy = [f.diagonal().real for f in self.fock]
-            self.mo_energy = [_adjust_occ(mo_e, self.nocc, -madelung) 
-                              for k, mo_e in enumerate(self.mo_energy)]
-
-        self.e_hf = agf2._scf.e_tot
-
-
-#TODO dtype - do we just inherit the mo_coeff.dtype or use np.result_type(eri, mo_coeff) ?
-#TODO blksize, max_memory
-#TODO symmetry broken (commented)
-def _make_mo_eris_incore(agf2, mo_coeff=None):
-    # (pq|rs) incore
-    ''' Returns _ChemistsERIs
-    '''
-
-    cput0 = (time.clock(), time.time())
-    log = logger.Logger(agf2.stdout, agf2.verbose)
-
-    eris = _ChemistsERIs()
-    eris._common_init_(agf2, mo_coeff)
-    with_df = agf2.with_df
-    dtype = complex
-
-    nmo = agf2.nmo
-    npair = nmo * (nmo+1) // 2
-
-    kpts = eris.kpts
-    nkpts = len(kpts)
-    khelper = agf2.khelper
-    kconserv = khelper.kconserv
-
-    eri = np.empty((nkpts, nkpts, nkpts, nmo, nmo, nmo, nmo), dtype=dtype)
-
-    #for kp in range(nkpts):
-    #    for kq in range(nkpts):
-    #        for kr in range(nkpts):
-    for kpqr in mpi_helper.nrange(nkpts**3):
-        kpq, kr = divmod(kpqr, nkpts)
-        kp, kq = divmod(kpq, nkpts)
-        ks = kconserv[kp,kq,kr]
-
-        coeffs = eris.mo_coeff[[kp,kq,kr,ks]]
-        kijkl = kpts[[kp,kq,kr,ks]]
-
-        eri_kpt = with_df.ao2mo(coeffs, kijkl, compact=False)
-        eri_kpt = eri_kpt.reshape(nmo, nmo, nmo, nmo)
-
-        if dtype in [np.float, np.float64]:
-            eri_kpt = eri_kpt.real
-
-        eri[kp,kq,kr] = eri_kpt / nkpts
-
-    #for ikp, ikq, ikr in khelper.symm_map.keys():
-    #    iks = kconserv[ikp,ikq,ikr]
-
-    #    coeffs = eris.mo_coeff[[ikp,ikq,ikr,iks]]
-    #    kijkl = kpts[[ikp,ikq,ikr,iks]]
-
-    #    eri_kpt = with_df.ao2mo(coeffs, kijkl, compact=False)
-    #    eri_kpt = eri_kpt.reshape(nmo, nmo, nmo, nmo)
-
-    #    if dtype == np.float:
-    #        eri_kpt = eri_kpt.real
-
-    #    for kp, kq, kr in khelper.symm_map[(ikp, ikq, ikr)]:
-    #        eri_kpt_symm = khelper.transform_symm(eri_kpt, kp, kq, kr)
-    #        eri[kp,kq,kr] = eri_kpt_symm / nkpts
-
-    mpi_helper.barrier()
-    mpi_helper.allreduce_safe_inplace(eri)
-
-    eris.eri = eri
-
-    log.timer('MO integral transformation', *cput0)
-
-    return eris
-
-    ##NOTE Uncomment to covnert to incore:
-    #eris = _make_mo_eris_direct(agf2, mo_coeff)
-    #eris.eri = lib.einsum('ablp,abclq->abcpq', eris.qij.conj(), eris.qkl).reshape((agf2.nkpts,)*3+(agf2.nmo,)*4)
-    #del eris.qij, eris.qkl
-
-    #return eris
-
-def _get_naux_from_cderi(with_df):
-    ''' Get the largest possible naux from the _cderi object. There
-        can be different numbers at each k-point.
-    '''
-
-    cell = with_df.cell
-    load3c = df.df._load3c
-    kpts = with_df.kpts
-    nkpts = len(kpts)
-
-    naux = 0
-
-    for kp in range(nkpts):
-        for kq in range(nkpts):
-            with load3c(with_df._cderi, 'j3c', kpts[[kp,kq]], 'j3c-kptij') as j3c:
-                naux = max(naux, j3c.shape[0])
-
-                if cell.dimension == 2 and cell.low_dim_ft_type != 'inf_vacuum':
-                    with load3c(with_df._cderi, 'j3c-', kpts[[kp,kq]], 'j3c-kptij',
-                                ignore_key_error=True) as j3c:
-                        naux = max(naux, j3c.shape[0])
-
-    return naux
-
-def _make_ao_eris_direct_aftdf(agf2, eris):
-    ''' Get the 3c AO tensors for AFTDF '''
-
-    with_df = agf2.with_df
-    cell = with_df.cell
-    dtype = complex
-    kpts = eris.kpts
-    nkpts = len(kpts)
-    ngrids = len(cell.gen_uniform_grids(with_df.mesh))
-    nao = cell.nao
-    kconserv = tools.get_kconserv(cell, kpts)
-    
-    bra = np.zeros((nkpts, nkpts, ngrids, cell.nao**2), dtype=dtype)
-    ket = np.zeros((nkpts, nkpts, nkpts, ngrids, cell.nao**2), dtype=dtype)
-
-    kij = np.array([(ki,kj) for ki in kpts for kj in kpts])
-    kis, kjs = kij[:,0], kij[:,1]
-    q = kjs - kis
-    ukpts, uidx, uinv = kpts_helper.unique(q)
-
-    #for uid, kpt in enumerate(ukpts):
-    for uid in mpi_helper.nrange(len(ukpts)):
-        q = ukpts[uid]
-        adapted_ji = np.where(uinv == uid)[0]
-        kjs = kij[:,1][adapted_ji]
-        fac = with_df.weighted_coulG(q, False, with_df.mesh) / nkpts
-
-        ##TODO: fix block size?? ft_loop has max_memory argument
-        for aoaoks, p0, p1 in with_df.ft_loop(with_df.mesh, q, kjs):
-            for ji, aoao in enumerate(aoaoks):
-                ki, kj = divmod(adapted_ji[ji], nkpts)
-                bra[ki,kj,p0:p1] = fac[p0:p1,None] * aoao.reshape(p1-p0, -1)
-
-        ki, kj = divmod(adapted_ji[0], nkpts)
-        kls = kpts[kconserv[ki,kj,:]]
-
-        for aoaoks, p0, p1 in with_df.ft_loop(with_df.mesh, q, -kls):
-            for kk, aoao in enumerate(aoaoks):
-                for ji, ji_idx in enumerate(adapted_ji):
-                    ki, kj = divmod(ji_idx, nkpts)
-                    ket[ki,kj,kk,p0:p1] = aoao.conj().reshape(p1-p0, -1)
-
-    mpi_helper.barrier()
-    mpi_helper.allreduce_safe_inplace(bra)
-    mpi_helper.allreduce_safe_inplace(ket)
-
-    return bra.conj(), ket
-
-def _make_ao_eris_direct_fftdf(agf2, eris):
-    ''' Get the 3c AO tensors for FFTDF '''
-
-    with_df = agf2.with_df
-    cell = with_df.cell
-    dtype = complex
-    kpts = eris.kpts
-    nkpts = len(kpts)
-    kconserv = tools.get_kconserv(cell, kpts)
-    coords = cell.gen_uniform_grids(with_df.mesh)
-    aos = with_df._numint.eval_ao(cell, coords, kpts)
-    ngrids = len(coords)
-
-    bra = np.zeros((nkpts, nkpts, ngrids, cell.nao**2), dtype=dtype)
-    ket = np.zeros((nkpts, nkpts, nkpts, ngrids, cell.nao**2), dtype=dtype)
-
-    kij = np.array([(ki,kj) for ki in kpts for kj in kpts])
-    kis, kjs = kij[:,0], kij[:,1]
-    q = kjs - kis
-    ukpts, uidx, uinv = kpts_helper.unique(q)
-
-    #TODO: blksize loop over mesh?
-    #for uid, kpt in enumerate(ukpts):
-    for uid in mpi_helper.nrange(len(ukpts)):
-        q = ukpts[uid]
-        adapted_ji = np.where(uinv == uid)[0]
-        ki, kj = divmod(adapted_ji[0], nkpts)
-
-        fac = tools.get_coulG(cell, q, mesh=with_df.mesh)
-        fac *= (cell.vol / ngrids) / nkpts
-        phase = np.exp(-1j * np.dot(coords, q))
-
-        for ji_idx in adapted_ji:
-            ki, kj = divmod(ji_idx, nkpts)
-
-            buf = lib.einsum('gi,gj->gij', aos[ki].conj(), aos[kj])
-            buf = buf.reshape(ngrids, -1)
-            bra[ki,kj] = buf
-
-            for kk in range(nkpts):
-                kl = kconserv[ki,kj,kk]
-
-                buf = lib.einsum('gi,g,gj->ijg', aos[kk].conj(), phase.conj(), aos[kl])
-                buf = tools.ifft(buf.reshape(-1, ngrids), with_df.mesh) * fac
-                buf = tools.fft(buf.reshape(-1, ngrids), with_df.mesh) * phase
-                ket[ki,kj,kk] = lib.transpose(buf)
-
-                buf = None
-
-    mpi_helper.barrier()
-    mpi_helper.allreduce_safe_inplace(bra)
-    mpi_helper.allreduce_safe_inplace(ket)
-
-    return bra, ket
-
-def _make_ao_eris_direct_gdf(agf2, eris):
-    ''' Get the 3c AO tensors for GDF '''
-    #TODO bra-ket symmetry? Must split 1/nkpts factor and sign (could be complex?)
-
-    with_df = agf2.with_df
-    cell = with_df.cell
-    dtype = complex
-    kpts = eris.kpts
-    nkpts = len(kpts)
-    kconserv = tools.get_kconserv(cell, kpts)
-    ngrids = _get_naux_from_cderi(with_df)
-
-    bra = np.zeros((nkpts, nkpts, ngrids, cell.nao**2), dtype=dtype)
-    ket = np.zeros((nkpts, nkpts, nkpts, ngrids, cell.nao**2), dtype=dtype)
-
-    kij = np.array([(ki,kj) for ki in kpts for kj in kpts])
-    kis, kjs = kij[:,0], kij[:,1]
-    q = kjs - kis
-    ukpts, uidx, uinv = kpts_helper.unique(q)
-
-    #for uid, kpt in enumerate(ukpts):
-    for uid in mpi_helper.nrange(len(ukpts)):
-        adapted_ji = np.where(uinv == uid)[0]
-
-        for ji_idx in adapted_ji:
-            ki, kj = divmod(ji_idx, nkpts)
-
-            p1 = 0
-            for qij_r, qij_i, sign in with_df.sr_loop(kpts[[ki,kj]], compact=False):
-                p0, p1 = p1, p1 + qij_r.shape[0] 
-                bra[ki,kj,p0:p1] = (qij_r - qij_i * 1j) / np.sqrt(nkpts)  #TODO: + or - ?
-
-            for kk in range(nkpts):
-                kl = kconserv[ki,kj,kk]
-
-                q1 = 0
-                for qkl_r, qkl_i, sign in with_df.sr_loop(kpts[[kk,kl]], compact=False):
-                    q0, q1 = q1, q1 + qkl_r.shape[0]
-                    ket[ki,kj,kk,q0:q1] = (qkl_r + qkl_i * 1j) * sign / np.sqrt(nkpts)
-
-    mpi_helper.barrier()
-    mpi_helper.allreduce_safe_inplace(bra)
-    mpi_helper.allreduce_safe_inplace(ket)
-
-    return bra, ket
-
-#TODO: write out custom function combining aftdf and gdf to avoid copying
-def _make_ao_eris_direct_mdf(agf2, eris):
-    ''' Get the 3c AO tensors for MDF '''
-
-    eri0 = _make_ao_eris_direct_aftdf(agf2, eris)
-    eri1 = _make_ao_eris_direct_gdf(agf2, eris)
-
-    bra = np.concatenate((eri0[0], eri1[0]), axis=-2)
-    ket = np.concatenate((eri0[1], eri1[1]), axis=-2)
-
-    return bra, ket
-
-def _fao2mo(eri, cp, cq, dtype, out=None):
-    ''' DF ao2mo '''
-    #return np.einsum('lpq,pi,qj->lij', eri.reshape(-2, cp.shape[0], cq.shape[0]), cp.conj(), cq).reshape(-1, cp.shape[1]*cq.shape[1])
-
-    npq, cpq, spq = ao2mo.incore._conc_mos(cp, cq, compact=False)[1:]
-    sym = dict(aosym='s1', mosym='s1')
-    naux = eri.shape[0]
-
-    if out is None:
-        out = np.zeros((naux*cp.shape[1]*cq.shape[1]), dtype=dtype)
-    out = out.reshape(naux, cp.shape[1]*cq.shape[1])
-    out = out.astype(dtype)
-
-    if dtype in [np.float, np.float64]:
-        out = ao2mo._ao2mo.nr_e2(eri, cpq, spq, out=out, **sym)
-    else:
-        cpq = np.asarray(cpq, dtype=complex)
-        out = ao2mo._ao2mo.r_e2(eri, cpq, spq, [], None, out=out)
-
-    return out.reshape(naux, npq)
-
-def _make_mo_eris_direct(agf2, mo_coeff=None):
-    # (pq|L)(L|rs) incore
-
-    cput0 = (time.clock(), time.time())
-    log = logger.Logger(agf2.stdout, agf2.verbose)
-
-    eris = _ChemistsERIs()
-    eris._common_init_(agf2, mo_coeff)
-
-    cell = agf2.cell
-    with_df = agf2.with_df
-    kpts = eris.kpts
-    nkpts = len(kpts)
-    kconserv = tools.get_kconserv(cell, kpts)
-    nmo = eris.nmo
-
-    if mo_coeff is None:
-        mo_coeff = eris.mo_coeff
-
-    if isinstance(with_df, df.MDF):
-        bra, ket = _make_ao_eris_direct_mdf(agf2, eris)
-    elif isinstance(with_df, df.GDF):
-        bra, ket = _make_ao_eris_direct_gdf(agf2, eris)
-    elif isinstance(with_df, df.AFTDF):
-        bra, ket = _make_ao_eris_direct_aftdf(agf2, eris)
-    elif isinstance(with_df, df.FFTDF):
-        bra, ket = _make_ao_eris_direct_fftdf(agf2, eris)
-    else:
-        raise ValueError('Unknown DF type %s' % type(with_df))
-
-    dtype = complex
-    naux = bra.shape[2]
-
-    kij = np.array([(ki,kj) for ki in kpts for kj in kpts])
-    kis, kjs = kij[:,0], kij[:,1]
-    q = kjs - kis
-    ukpts, uidx, uinv = kpts_helper.unique(q)
-
-    qij = np.zeros((nkpts, nkpts, naux, nmo**2), dtype=dtype)
-    qkl = np.zeros((nkpts, nkpts, nkpts, naux, nmo**2), dtype=dtype)
-
-    #for uid, kpt in enumerate(ukpts):
-    for uid in mpi_helper.nrange(len(ukpts)):
-        q = ukpts[uid]
-        adapted_ji = np.where(uinv == uid)[0]
-        kjs = kij[:,1][adapted_ji]
-
-        for ji, ji_idx in enumerate(adapted_ji):
-            ki, kj = divmod(adapted_ji[ji], nkpts)
-            ci = mo_coeff[ki].conj()
-            cj = mo_coeff[kj].conj()
-            qij[ki,kj] = _fao2mo(bra[ki,kj], ci, cj, dtype, out=qij[ki,kj])
-
-            for kk in range(nkpts):
-                kl = kconserv[ki,kj,kk]
-                ck = mo_coeff[kk]
-                cl = mo_coeff[kl]
-                qkl[ki,kj,kk] = _fao2mo(ket[ki,kj,kk], ck, cl, dtype, out=qkl[ki,kj,kk])
-
-    mpi_helper.barrier()
-    mpi_helper.allreduce_safe_inplace(qij)
-    mpi_helper.allreduce_safe_inplace(qkl)
-
-    eris.qij = qij
-    eris.qkl = qkl
-    eris.eri = (qij, qkl)
-
-    log.timer('MO integral transformation', *cput0)
-
-    return eris
-
-def _make_qmo_eris_incore(agf2, eri, coeffs, kpts):
-    ''' (xi|ja)
-    '''
-    #return np.einsum('pqrs,qi,rj,sa->pija', eri.eri[kpts[0],kpts[1],kpts[2]], coeffs[0], coeffs[1].conj(), coeffs[2])
-
-    cput0 = (time.clock(), time.time())
-    log = logger.Logger(agf2.stdout, agf2.verbose)
-
-    kx, ki, kj, ka = kpts
-    ci, cj, ca = coeffs
-
-    dtype = np.result_type(eri.eri.dtype, ci.dtype, cj.dtype, ca.dtype)
-    xija = np.zeros((eri.nmo**2, cj.shape[1], ca.shape[1]), dtype=dtype)
-
-    mo = eri.eri[kx,ki,kj].reshape(-1, eri.nmo**2)
-    xija = _fao2mo(mo, cj, ca, dtype, out=xija)
-
-    xija = xija.reshape(eri.nmo, eri.nmo, cj.shape[1], ca.shape[1])
-    xija = lib.einsum('xyja,yi->xija', xija, ci)
-
-    #log.timer('QMO integral transformation', *cput0)
-
-    return xija
-
-def _make_qmo_eris_direct(agf2, eri, coeffs, kpts):
-    ''' (xi|L)(L|rs) incore
-    '''
-    #return (np.einsum('lpq,qi->lpi', eri.qij[kpts[0],kpts[1]].reshape(-1, eri.nmo, eri.nmo), coeffs[0].conj()).reshape(-1, eri.nmo*coeffs[0].shape[1]), 
-    #        np.einsum('lpq,pi,qj->lij', eri.qkl[kpts[0],kpts[1],kpts[2]].reshape(-1, eri.nmo, eri.nmo), coeffs[1].conj(), coeffs[2]).reshape(-1, coeffs[1].shape[1]*coeffs[2].shape[1]))
-
-    cput0 = (time.clock(), time.time())
-    log = logger.Logger(agf2.stdout, agf2.verbose)
-
-    kx, ki, kj, ka = kpts
-    ci, cj, ca = coeffs
-    
-    dtype = np.result_type(eri.qij.dtype, eri.qkl.dtype, ci.dtype, cj.dtype, ca.dtype)
-    naux = eri.eri[0].shape[2]
-
-    qwx = eri.eri[0][kx,ki].reshape(-1, eri.nmo)
-    qwi = np.dot(qwx, ci.conj()).reshape(naux, -1)
-
-    qyz = eri.eri[1][kx,ki,kj].reshape(-1, eri.nmo**2)
-    qja = _fao2mo(qyz, cj, ca, dtype).reshape(naux, -1)
-
-    #log.timer('QMO integral transformation', *cput0)
-
-    return qwi, qja
-
-
-def ft_loop(self, mesh=None, q=np.zeros(3), kpts=None, shls_slice=None,
-            max_memory=4000, aosym='s1', intor='GTO_ft_ovlp', comp=1):
-    from pyscf.pbc.df import ft_ao
-
-    cell = self.cell
-    if mesh is None:
-        mesh = self.mesh
-    if kpts is None:
-        assert(df.aft.is_zero(q))
-    if shls_slice is None:
-        shls_slice = (0, cell.nbas, 0, cell.nbas)
-    kpts = np.asarray(kpts)
-    nkpts = len(kpts)
-
-    ao_loc = cell.ao_loc_nr()
-    b = cell.reciprocal_vectors()
-    Gv, Gvbase, kws = cell.get_Gv_weights(mesh)
-    gxyz = lib.cartesian_prod([np.arange(len(x)) for x in Gvbase])
-    ngrids = gxyz.shape[0]
-
-    if aosym == 's2':
-        assert(shls_slice[2] == 0)
-        i0 = ao_loc[shls_slice[0]]
-        i1 = ao_loc[shls_slice[1]]
-        nij = i1*(i1+1)//2 - i0*(i0+1)//2
-    else:
-        ni = ao_loc[shls_slice[1]] - ao_loc[shls_slice[0]]
-        nj = ao_loc[shls_slice[3]] - ao_loc[shls_slice[2]]
-        nij = ni*nj
-
-    size, rank = mpi_helper.size, mpi_helper.rank
-    per_rank = ngrids // mpi_helper.size
-    start = rank * per_rank
-    stop = ngrids if rank == (size-1) else (rank+1) * per_rank
-
-
-    blksize = max(16, int(max_memory*.9e6/(nij*nkpts*16*comp)))
-    blksize = min(blksize, per_rank, 16384)
-    passes = per_rank // blksize
-    blksize = (stop-start) // passes
-
-    for npass in range(passes):
-        start0 = start + npass * blksize
-        stop0 = stop if npass == (passes-1) else start + (npass+1) * blksize
-
-        buf = np.empty(nkpts*nij*(stop0-start0)*comp, dtype=np.complex128)
-        dat = ft_ao._ft_aopair_kpts(cell, Gv[start0:stop0], shls_slice, 
-                                    aosym, b, gxyz[start0:stop0], Gvbase, 
-                                    q, kpts, intor, comp, out=buf)
-
-        dat = dat.reshape(nkpts*comp*(stop0-start0), -1)
-
-        for nproc in range(size):
-            mpi_helper.barrier()
-
-            shape, dtype = mpi_helper.comm.bcast((dat.shape, dat.dtype), root=nproc)
-            q0, q1 = mpi_helper.comm.bcast((start0, stop0), root=nproc)
-
-            if nproc == rank:
-                buf = dat
-            else:
-                buf = np.empty(shape, dtype=dtype)
-
-            buf = mpi_helper.bcast(buf, root=nproc)
-
-            blk = shape[0] // (nkpts*comp)
-            buf = buf.reshape(nkpts, comp, blk, -1)
-
-            if comp == 1:
-                buf = np.squeeze(buf, axis=1)
-
-            yield buf, q0, q1
-
-    #NOTE: block of code for ft_loop without prange on each process:
-    #buf = np.empty(nkpts*nij*(stop-start)*comp, dtype=np.complex128)
-
-    #dat = ft_ao._ft_aopair_kpts(cell, Gv[start:stop], shls_slice, aosym,
-    #                            b, gxyz[start:stop], Gvbase, q, kpts,
-    #                            intor, comp, out=buf)
-
-    #dat = dat.reshape(nkpts*comp*(stop-start), -1)
-
-    #q1 = 0
-    #for nproc in range(size):
-    #    mpi_helper.barrier()
-
-    #    shape, dtype = mpi_helper.comm.bcast((dat.shape, dat.dtype))
-
-    #    if nproc == rank:
-    #        buf = dat
-    #    else:
-    #        buf = np.empty(shape, dtype=dtype)
-
-    #    buf = mpi_helper.bcast(buf, root=nproc)
-
-    #    blk = shape[0] // (nkpts*comp)
-    #    buf = buf.reshape(nkpts, comp, blk, -1)
-    #    q0, q1 = q1, q1 + blk
-
-    #    if comp == 1:
-    #        buf = np.squeeze(buf, axis=1)
-
-    #    yield buf, q0, q1
-
-
-
 if __name__ == '__main__':
-    from pyscf.pbc import gto, scf, cc, mp
+    import warnings
+    import h5py
+    warnings.simplefilter('ignore', h5py.h5py_warnings.H5pyDeprecationWarning)
+    from pyscf.pbc import gto, scf, cc, mp, df
 
     def test_eri(rhf):
         gf2 = KRAGF2(rhf)
@@ -1817,13 +1174,13 @@ if __name__ == '__main__':
         eri = gf2.ao2mo()
 
         if isinstance(gf2.with_df, df.MDF):
-            bra, ket = _make_ao_eris_direct_mdf(gf2, eri)
+            bra, ket = kragf2_ao2mo._make_ao_eris_direct_mdf(gf2, eri)
         elif isinstance(gf2.with_df, df.GDF):
-            bra, ket = _make_ao_eris_direct_gdf(gf2, eri)
+            bra, ket = kragf2_ao2mo._make_ao_eris_direct_gdf(gf2, eri)
         elif isinstance(gf2.with_df, df.AFTDF):
-            bra, ket = _make_ao_eris_direct_aftdf(gf2, eri)
+            bra, ket = kragf2_ao2mo._make_ao_eris_direct_aftdf(gf2, eri)
         elif isinstance(gf2.with_df, df.FFTDF):
-            bra, ket = _make_ao_eris_direct_fftdf(gf2, eri)
+            bra, ket = kragf2_ao2mo._make_ao_eris_direct_fftdf(gf2, eri)
         ao0 = np.einsum('ablp,abclq->abcpq', bra.conj(), ket).reshape((gf2.nkpts,)*3 + (gf2.nmo,)*4)
         ao1 = rhf.with_df.ao2mo_7d(np.asarray([[np.eye(gf2.nmo),]*gf2.nkpts]*4), kpts=rhf.kpts) / len(rhf.kpts)
 
@@ -1835,9 +1192,9 @@ if __name__ == '__main__':
         cj = np.random.random((gf2.nmo, gf2.nocc*2)) + 1.0j * np.random.random((gf2.nmo, gf2.nocc*2))  
         ca = np.random.random((gf2.nmo, (gf2.nmo-gf2.nocc)*2)) + 1.0j * np.random.random((gf2.nmo, (gf2.nmo-gf2.nocc)*2))
         qmo0 = np.einsum('pqrs,qi,rj,sa->pija', eri2[0,1,0], ci, cj.conj(), ca)
-        qmo1_bra, qmo1_ket = _make_qmo_eris_direct(gf2, eri_df, (ci,cj,ca), [0,1,0,1])
+        qmo1_bra, qmo1_ket = kragf2_ao2mo._make_qmo_eris_direct(gf2, eri_df, (ci,cj,ca), [0,1,0,1])
         qmo1 = np.dot(qmo1_bra.conj().T, qmo1_ket).reshape(qmo0.shape)
-        qmo2 = _make_qmo_eris_incore(gf2, eri, (ci,cj,ca), [0,1,0,1])
+        qmo2 = kragf2_ao2mo._make_qmo_eris_incore(gf2, eri, (ci,cj,ca), [0,1,0,1])
 
         print('MO', np.allclose(eri0, eri2), np.allclose(eri1, eri2), np.linalg.norm(eri0-eri2), np.linalg.norm(eri1-eri2))
         print('AO', np.allclose(ao0, ao1), np.linalg.norm(ao0-ao1))
@@ -1853,8 +1210,8 @@ if __name__ == '__main__':
         vj0 = np.einsum('kpq,kpi,kqj->kij', vj0, np.asarray(rhf.mo_coeff).conj(), np.asarray(rhf.mo_coeff))
         vk0 = np.einsum('kpq,kpi,kqj->kij', vk0, np.asarray(rhf.mo_coeff).conj(), np.asarray(rhf.mo_coeff))
 
-        vj1, vk1 = gf2.get_jk(eri.eri,    [x.make_rdm1() for x in gf2.init_gf()])
-        vj2, vk2 = gf2.get_jk(eri_df.eri, [x.make_rdm1() for x in gf2.init_gf()])
+        vj1, vk1 = gf2.get_jk(eri.eri,    [x.make_rdm1() for x in gf2.init_gf(eri)])
+        vj2, vk2 = gf2.get_jk(eri_df.eri, [x.make_rdm1() for x in gf2.init_gf(eri_df)])
 
         print('J', np.allclose(vj0, vj1), np.allclose(vj0, vj2), np.linalg.norm(vj0-vj1), np.linalg.norm(vj0-vj2))
         print('K', np.allclose(vk0, vk1), np.allclose(vk0, vk2), np.linalg.norm(vk0-vk1), np.linalg.norm(vk0-vk2))
@@ -1887,6 +1244,7 @@ if __name__ == '__main__':
     #             basis = 'gth-szv')
 
     ase_atom = bulk('Si', 'diamond', a=5.43102)
+    #ase_atom = bulk('C', 'diamond', a=5.43102)
     cell = pyscf_cache.Cell()
     cell.atom = pyscf_ase.ase_atoms_to_pyscf(ase_atom)
     cell.a = ase_atom.cell[:]
@@ -1906,8 +1264,8 @@ if __name__ == '__main__':
 
     rhf.run()
 
-    #test_eri(rhf)
-    #test_fock(rhf)
+    test_eri(rhf)
+    test_fock(rhf)
     
     #gf2a = KRAGF2(rhf)
     #gf2a.direct = False
@@ -1917,10 +1275,10 @@ if __name__ == '__main__':
 
     gf2b = KRAGF2(rhf)
     gf2b.direct = False
-    gf2b.conv_tol = 1e-6
-    gf2b.max_cycle = 30
-    gf2b.keep_exxdiv = True
-    gf2b.damping = 0.5
+    gf2b.conv_tol = 1e-5
+    gf2b.max_cycle = 20
+    gf2b.keep_exxdiv = False
+    gf2b.damping = 0.0
     gf2b.run()
 
     #mp2 = mp.KMP2(rhf)
