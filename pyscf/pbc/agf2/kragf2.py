@@ -317,7 +317,7 @@ def get_jk_direct(agf2, eri, rdm1, with_j=True, with_k=True):
             kl = agf2.khelper.kconserv[ki,kj,kk]
             buf = lib.dot(qij[ki,kl].reshape(-1, nmo).conj(), rdm1[kl], c=buf)
             buf = buf.reshape(-1, nmo, nmo).swapaxes(1,2).reshape(-1, nmo)
-            vk[ki] = lib.dot(buf.T, qkl[ki,kl,kk].reshape(-1, nmo), c=vk[ki], beta=1).T   #TODO: should that be .T.conj() ?
+            vk[ki] = lib.dot(buf.T, qkl[ki,kl,kk].reshape(-1, nmo), c=vk[ki], beta=1).T.conj()
 
         mpi_helper.barrier()
         mpi_helper.allreduce_safe_inplace(vk)
@@ -442,7 +442,7 @@ def get_fock(agf2, eri, gf=None, rdm1=None):
         rdm1 = agf2.make_rdm1(gf)
 
     vj, vk = agf2.get_jk(eri.eri, rdm1)
-    fock = eri.h1e + vj - 0.5 * vk
+    fock = np.array(eri.h1e) + vj - 0.5 * vk
 
     return fock
 

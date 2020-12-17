@@ -58,125 +58,59 @@ class KnownValues(unittest.TestCase):
     def tearDownClass(self):
         del self.cell, self.rhf_fft, self.rhf_aft, self.rhf_gdf, self.rhf_mdf
 
-    def test_ao_fft(self):
-        rhf = self.rhf_fft
+    def _test_ao(self, rhf, make):
         gf2 = agf2.KRAGF2(rhf)
         eris = lambda x: None
         eris.kpts = gf2.kpts
+        prec = 10
 
         size_7d = (gf2.nkpts,)*3 + (self.cell.nao,)*4
         eri_ref = gf2.with_df.ao2mo_7d([np.array([np.eye(self.cell.nao),]*gf2.nkpts)]*4)
         eri_ref = eri_ref.reshape(size_7d) / gf2.nkpts
 
-        bra, ket = kragf2_ao2mo._make_ao_eris_direct_fftdf(gf2, eris)
+        bra, ket = make(gf2, eris)
         eri_direct = lib.einsum('abQp,abcQq->abcpq', bra.conj(), ket).reshape(size_7d)
-        self.assertAlmostEqual(np.max(np.absolute(eri_ref-eri_direct)), 0, 8)
+        self.assertAlmostEqual(np.max(np.absolute(eri_ref-eri_direct)), 0, prec)
+
+    def test_ao_fft(self):
+        self._test_ao(self.rhf_fft, kragf2_ao2mo._make_ao_eris_direct_fftdf)
 
     def test_ao_aft(self):
-        rhf = self.rhf_aft
-        gf2 = agf2.KRAGF2(rhf)
-        eris = lambda x: None
-        eris.kpts = gf2.kpts
-
-        size_7d = (gf2.nkpts,)*3 + (self.cell.nao,)*4
-        eri_ref = gf2.with_df.ao2mo_7d([np.array([np.eye(self.cell.nao),]*gf2.nkpts)]*4)
-        eri_ref = eri_ref.reshape(size_7d) / gf2.nkpts
-
-        bra, ket = kragf2_ao2mo._make_ao_eris_direct_aftdf(gf2, eris)
-        eri_direct = lib.einsum('abQp,abcQq->abcpq', bra.conj(), ket).reshape(size_7d)
-        self.assertAlmostEqual(np.max(np.absolute(eri_ref-eri_direct)), 0, 8)
+        self._test_ao(self.rhf_aft, kragf2_ao2mo._make_ao_eris_direct_aftdf)
 
     def test_ao_gdf(self):
-        rhf = self.rhf_gdf
-        gf2 = agf2.KRAGF2(rhf)
-        eris = lambda x: None
-        eris.kpts = gf2.kpts
-
-        size_7d = (gf2.nkpts,)*3 + (self.cell.nao,)*4
-        eri_ref = gf2.with_df.ao2mo_7d([np.array([np.eye(self.cell.nao),]*gf2.nkpts)]*4)
-        eri_ref = eri_ref.reshape(size_7d) / gf2.nkpts
-
-        bra, ket = kragf2_ao2mo._make_ao_eris_direct_gdf(gf2, eris)
-        eri_direct = lib.einsum('abQp,abcQq->abcpq', bra.conj(), ket).reshape(size_7d)
-        self.assertAlmostEqual(np.max(np.absolute(eri_ref-eri_direct)), 0, 8)
+        self._test_ao(self.rhf_gdf, kragf2_ao2mo._make_ao_eris_direct_gdf)
 
     def test_ao_mdf(self):
-        rhf = self.rhf_mdf
-        gf2 = agf2.KRAGF2(rhf)
-        eris = lambda x: None
-        eris.kpts = gf2.kpts
+        self._test_ao(self.rhf_mdf, kragf2_ao2mo._make_ao_eris_direct_mdf)
 
-        size_7d = (gf2.nkpts,)*3 + (self.cell.nao,)*4
-        eri_ref = gf2.with_df.ao2mo_7d([np.array([np.eye(self.cell.nao),]*gf2.nkpts)]*4)
+    def _test_mo(self, rhf):
+        rhf.run(max_cycles=1)
+        gf2 = agf2.KRAGF2(rhf)
+        prec = 8
+
+        size_7d = (gf2.nkpts,)*3 + (gf2.nmo,)*4
+        eri_ref = gf2.with_df.ao2mo_7d([np.array(rhf.mo_coeff),]*4)
         eri_ref = eri_ref.reshape(size_7d) / gf2.nkpts
 
-        bra, ket = kragf2_ao2mo._make_ao_eris_direct_mdf(gf2, eris)
+        eri_incore = kragf2_ao2mo._make_mo_eris_incore(gf2).eri
+        self.assertAlmostEqual(np.max(np.absolute(eri_ref-eri_incore)), 0, prec)
+
+        bra, ket = kragf2_ao2mo._make_mo_eris_direct(gf2).eri
         eri_direct = lib.einsum('abQp,abcQq->abcpq', bra.conj(), ket).reshape(size_7d)
-        self.assertAlmostEqual(np.max(np.absolute(eri_ref-eri_direct)), 0, 8)
+        self.assertAlmostEqual(np.max(np.absolute(eri_ref-eri_direct)), 0, prec)
 
     def test_mo_fft(self):
-        rhf = self.rhf_fft
-        rhf.run(max_cycles=1)
-        gf2 = agf2.KRAGF2(rhf)
-
-        size_7d = (gf2.nkpts,)*3 + (gf2.nmo,)*4
-        eri_ref = gf2.with_df.ao2mo_7d([np.array(rhf.mo_coeff),]*4)
-        eri_ref = eri_ref.reshape(size_7d) / gf2.nkpts
-
-        eri_incore = kragf2_ao2mo._make_mo_eris_incore(gf2).eri
-        self.assertAlmostEqual(np.max(np.absolute(eri_ref-eri_incore)), 0, 8)
-
-        bra, ket = kragf2_ao2mo._make_mo_eris_direct(gf2).eri
-        eri_direct = lib.einsum('abQp,abcQq->abcpq', bra.conj(), ket).reshape(size_7d)
-        self.assertAlmostEqual(np.max(np.absolute(eri_ref-eri_direct)), 0, 8)
+        self._test_mo(self.rhf_fft)
 
     def test_mo_aft(self):
-        rhf = self.rhf_aft
-        rhf.run(max_cycles=1)
-        gf2 = agf2.KRAGF2(rhf)
-
-        size_7d = (gf2.nkpts,)*3 + (gf2.nmo,)*4
-        eri_ref = gf2.with_df.ao2mo_7d([np.array(rhf.mo_coeff),]*4)
-        eri_ref = eri_ref.reshape(size_7d) / gf2.nkpts
-
-        eri_incore = kragf2_ao2mo._make_mo_eris_incore(gf2).eri
-        self.assertAlmostEqual(np.max(np.absolute(eri_ref-eri_incore)), 0, 8)
-
-        bra, ket = kragf2_ao2mo._make_mo_eris_direct(gf2).eri
-        eri_direct = lib.einsum('abQp,abcQq->abcpq', bra.conj(), ket).reshape(size_7d)
-        self.assertAlmostEqual(np.max(np.absolute(eri_ref-eri_direct)), 0, 8)
+        self._test_mo(self.rhf_aft)
 
     def test_mo_gdf(self):
-        rhf = self.rhf_gdf
-        rhf.run(max_cycles=1)
-        gf2 = agf2.KRAGF2(rhf)
-
-        size_7d = (gf2.nkpts,)*3 + (gf2.nmo,)*4
-        eri_ref = gf2.with_df.ao2mo_7d([np.array(rhf.mo_coeff),]*4)
-        eri_ref = eri_ref.reshape(size_7d) / gf2.nkpts
-
-        eri_incore = kragf2_ao2mo._make_mo_eris_incore(gf2).eri
-        self.assertAlmostEqual(np.max(np.absolute(eri_ref-eri_incore)), 0, 8)
-
-        bra, ket = kragf2_ao2mo._make_mo_eris_direct(gf2).eri
-        eri_direct = lib.einsum('abQp,abcQq->abcpq', bra.conj(), ket).reshape(size_7d)
-        self.assertAlmostEqual(np.max(np.absolute(eri_ref-eri_direct)), 0, 8)
+        self._test_mo(self.rhf_gdf)
 
     def test_mo_mdf(self):
-        rhf = self.rhf_mdf
-        rhf.run(max_cycles=1)
-        gf2 = agf2.KRAGF2(rhf)
-
-        size_7d = (gf2.nkpts,)*3 + (gf2.nmo,)*4
-        eri_ref = gf2.with_df.ao2mo_7d([np.array(rhf.mo_coeff),]*4)
-        eri_ref = eri_ref.reshape(size_7d) / gf2.nkpts
-
-        eri_incore = kragf2_ao2mo._make_mo_eris_incore(gf2).eri
-        self.assertAlmostEqual(np.max(np.absolute(eri_ref-eri_incore)), 0, 8)
-
-        bra, ket = kragf2_ao2mo._make_mo_eris_direct(gf2).eri
-        eri_direct = lib.einsum('abQp,abcQq->abcpq', bra.conj(), ket).reshape(size_7d)
-        self.assertAlmostEqual(np.max(np.absolute(eri_ref-eri_direct)), 0, 8)
+        self._test_mo(self.rhf_mdf)
 
 
 if __name__ == '__main__':
