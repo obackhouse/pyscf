@@ -29,7 +29,7 @@ from pyscf import __config__
 from pyscf import ao2mo
 from pyscf.pbc import tools
 from pyscf.pbc.lib import kpts_helper
-from pyscf.pbc.agf2 import kragf2_ao2mo
+from pyscf.pbc.agf2 import kragf2_ao2mo, _kagf2
 from pyscf.agf2 import aux, ragf2, _agf2, mpi_helper
 from pyscf.agf2.chempot import binsearch_chempot, minimize_chempot
 from pyscf.pbc.mp.kmp2 import get_nocc, get_nmo, get_frozen_mask, \
@@ -43,6 +43,7 @@ from pyscf.pbc.mp.kmp2 import get_nocc, get_nmo, get_frozen_mask, \
 #TODO: change agf2 object to gf2 and molecular code
 #TODO: fix molecular code DIIS to use the Aux.moment function
 #TODO: should we track convergence via etot?
+#TODO: clean molecular fock loop, repeated eig
 
 
 #NOTE: printing IPs and EAs doesn't work with ragf2 kernel - fix later for better inheritance 
@@ -174,15 +175,8 @@ def build_se_part(agf2, eri, gf_occ, gf_vir, os_factor=1.0, ss_factor=1.0):
     vv = np.zeros((nkpts, nmo, nmo), dtype=np.complex128)
     vev = np.zeros((nkpts, nmo, nmo), dtype=np.complex128)
 
-    fpos = os_factor + ss_factor
-    fneg = -ss_factor
-
-    #NOTE: we can loop over x,i,j and determine a, or x,i,a and determine j. The former requires oo+vv
-    # operations with o(o+1)/2 + v(v+1)/2 intermediates, the latter requires 2ov operations and intermediates.
-    # I think the latter is better and also gives a more reliable platform for parallelism.
-
     if isinstance(eri.eri, (tuple, list)):
-        naux = agf2.naux
+        naux = eri.naux
 
         for kxia in mpi_helper.nrange(nkpts**3):
             kxi, ka = divmod(kxia, nkpts)
@@ -195,22 +189,8 @@ def build_se_part(agf2, eri, gf_occ, gf_vir, os_factor=1.0, ss_factor=1.0):
 
             qxi, qja = fmo2qmo(agf2, eri, (ci,cj,ca), (kx,ki,kj,ka))
             qxj, qia = fmo2qmo(agf2, eri, (cj,ci,ca), (kx,kj,ki,ka))
-            eja = lib.direct_sum('j,a->ja', ej, -ea).ravel()
 
-            #TODO: mesh can be large - block the dot products
-            for i in range(ni):
-                qx = np.array(qxi.reshape(naux, nmo, ni)[:,:,i])
-                xija = lib.dot(qx.T.conj(), qja)
-                xjia = lib.dot(qxj.T.conj(), np.array(qia[:,i*na:(i+1)*na]))
-                xjia = xjia.reshape(nmo, nj*na)
-                xjia = fpos * xija + fneg * xjia
-
-                vv[kx] = lib.dot(xija, xjia.T.conj(), beta=1, c=vv[kx])
-
-                eija = eja + ei[i]
-                exija = xija * eija[None]
-
-                vev[kx] = lib.dot(exija, xjia.T.conj(), beta=1, c=vev[kx])
+            vv[kx], vev[kx] = _kagf2.build_mats_kragf2_direct(qxi, qja, qxj, qia, ei, ej, ea, **facs)
 
     else:
         for kxia in mpi_helper.nrange(nkpts**3):
@@ -224,19 +204,8 @@ def build_se_part(agf2, eri, gf_occ, gf_vir, os_factor=1.0, ss_factor=1.0):
 
             pija = fmo2qmo(agf2, eri, (ci,cj,ca), (kx,ki,kj,ka))
             pjia = fmo2qmo(agf2, eri, (cj,ci,ca), (kx,kj,ki,ka))
-            eja = lib.direct_sum('j,a->ja', ej, -ea).ravel()
 
-            for i in range(ni):
-                xija = np.array(pija[:,i].reshape(nmo, -1))
-                xjia = np.array(pjia[:,:,i].reshape(nmo, -1))
-                xjia = fpos * xija + fneg * xjia
-
-                vv[kx] = lib.dot(xija, xjia.T.conj(), beta=1, c=vv[kx])
-
-                eija = eja + ei[i]
-                exija = xija * eija[None]
-
-                vev[kx] = lib.dot(exija, xjia.T.conj(), beta=1, c=vev[kx])
+            vv[kx], vev[kx] = _kagf2.build_mats_kragf2_incore(pija, pjia, ei, ej, ea, **facs)
 
 
     mpi_helper.barrier()
@@ -517,21 +486,13 @@ def fock_loop(agf2, eri, gf, se, nelec_per_kpt=None):
             nerr = 0
 
             for kx in range(nkpts):
-                #TODO: remove this repeated eig, and in molecular code
                 nelec = nelec_per_kpt[kx]
-                w, v = se[kx].eig(fock[kx], chempot=0.0)
+                w, v = se[kx].eig(fock[kx])
                 se[kx].chempot, nerr_kpt = binsearch_chempot((w, v), nmo, nelec)
                 nerr = nerr_kpt.real if abs(nerr_kpt.real) > nerr else nerr
 
-                w, v = se[kx].eig(fock[kx])
                 gf[kx] = aux.GreensFunction(w, v[:nmo], chempot=se[kx].chempot)
                 gf[kx].remove_uncoupled(tol=agf2.weight_tol)
-
-                #w, v = se[kx].eig(fock[kx])
-                #se[kx].chempot, nerr_kpt = binsearch_chempot((w, v), nmo, nelec)
-                #nerr = nerr_kpt.real if abs(nerr_kpt.real) > nerr else nerr
-                #gf[kx] = aux.GreensFunction(w, v[:nmo], chempot=se[kx].chempot)
-                #gf[kx].remove_uncoupled(tol=agf2.weight_tol)
 
             fock = agf2.get_fock(eri, gf)
             rdm1 = agf2.make_rdm1(gf)
@@ -659,7 +620,7 @@ class KRAGF2(ragf2.RAGF2):
         if mo_occ is None:    mo_occ    = mf.mo_occ
 
         if not (frozen is None or frozen == 0):
-            raise ValueError('Frozen orbitals not support for KAGF2')
+            raise ValueError('Frozen orbitals not supported for KAGF2')
 
         self.cell = mf.cell
         self._scf = mf
@@ -1274,7 +1235,7 @@ if __name__ == '__main__':
     #gf2a.run()
 
     gf2b = KRAGF2(rhf)
-    gf2b.direct = False
+    gf2b.direct = True
     gf2b.conv_tol = 1e-5
     gf2b.max_cycle = 20
     gf2b.keep_exxdiv = False
