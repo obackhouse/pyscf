@@ -92,9 +92,8 @@ class _ChemistsERIs:
 
     @property
     def naux(self):
-        if not hasattr(self, 'eri') or isinstance(self.eri, (tuple, list)):
+        if not hasattr(self, 'eri') or not isinstance(self.eri, (tuple, list)):
             raise AttributeError
-        assert self.eri[0].ndim == 5
         return self.eri[0].shape[2]
 
 #TODO dtype - do we just inherit the mo_coeff.dtype or use np.result_type(eri, mo_coeff) ?
@@ -148,12 +147,12 @@ def _make_mo_eris_incore(agf2, mo_coeff=None):
     #    eri_kpt = with_df.ao2mo(coeffs, kijkl, compact=False)
     #    eri_kpt = eri_kpt.reshape(nmo, nmo, nmo, nmo)
 
-    #    if dtype == np.float:
+    #    if dtype in [np.float, np.float64]: 
     #        eri_kpt = eri_kpt.real
 
     #    for kp, kq, kr in khelper.symm_map[(ikp, ikq, ikr)]:
     #        eri_kpt_symm = khelper.transform_symm(eri_kpt, kp, kq, kr)
-    #        eri[kp,kq,kr] = eri_kpt_symm / nkpts
+    #        eri[kp,kr,kq] = eri_kpt_symm.transpose(0,2,1,3) / nkpts
 
     mpi_helper.barrier()
     mpi_helper.allreduce_safe_inplace(eri)
@@ -164,7 +163,7 @@ def _make_mo_eris_incore(agf2, mo_coeff=None):
 
     return eris
 
-    ##NOTE Uncomment to covnert to incore:
+    ##NOTE Uncomment to convert to incore:
     #eris = _make_mo_eris_direct(agf2, mo_coeff)
     #eris.eri = lib.einsum('ablp,abclq->abcpq', eris.qij.conj(), eris.qkl).reshape((agf2.nkpts,)*3+(agf2.nmo,)*4)
     #del eris.qij, eris.qkl
@@ -195,6 +194,7 @@ def _get_naux_from_cderi(with_df):
 
     return naux
 
+##TODO: fix block size?? ft_loop has max_memory argument
 def _make_ao_eris_direct_aftdf(agf2, eris):
     ''' Get the 3c AO tensors for AFTDF '''
 
@@ -215,14 +215,12 @@ def _make_ao_eris_direct_aftdf(agf2, eris):
     q = kjs - kis
     ukpts, uidx, uinv = kpts_helper.unique(q)
 
-    #for uid, kpt in enumerate(ukpts):
     for uid in mpi_helper.nrange(len(ukpts)):
         q = ukpts[uid]
         adapted_ji = np.where(uinv == uid)[0]
         kjs = kij[:,1][adapted_ji]
         fac = with_df.weighted_coulG(q, False, with_df.mesh) / nkpts
 
-        ##TODO: fix block size?? ft_loop has max_memory argument
         for aoaoks, p0, p1 in with_df.ft_loop(with_df.mesh, q, kjs):
             for ji, aoao in enumerate(aoaoks):
                 ki, kj = divmod(adapted_ji[ji], nkpts)
@@ -243,6 +241,7 @@ def _make_ao_eris_direct_aftdf(agf2, eris):
 
     return bra.conj(), ket
 
+#TODO: blksize loop over mesh?
 def _make_ao_eris_direct_fftdf(agf2, eris):
     ''' Get the 3c AO tensors for FFTDF '''
 
@@ -264,8 +263,6 @@ def _make_ao_eris_direct_fftdf(agf2, eris):
     q = kjs - kis
     ukpts, uidx, uinv = kpts_helper.unique(q)
 
-    #TODO: blksize loop over mesh?
-    #for uid, kpt in enumerate(ukpts):
     for uid in mpi_helper.nrange(len(ukpts)):
         q = ukpts[uid]
         adapted_ji = np.where(uinv == uid)[0]
@@ -299,9 +296,9 @@ def _make_ao_eris_direct_fftdf(agf2, eris):
     return bra, ket
 
 #TODO: I think gdf can have different naux at different k-points, but we just pad with zeros
+#TODO bra-ket symmetry? Must split 1/nkpts factor and sign (could be complex?)
 def _make_ao_eris_direct_gdf(agf2, eris):
     ''' Get the 3c AO tensors for GDF '''
-    #TODO bra-ket symmetry? Must split 1/nkpts factor and sign (could be complex?)
 
     with_df = agf2.with_df
     cell = with_df.cell
@@ -319,7 +316,6 @@ def _make_ao_eris_direct_gdf(agf2, eris):
     q = kjs - kis
     ukpts, uidx, uinv = kpts_helper.unique(q)
 
-    #for uid, kpt in enumerate(ukpts):
     for uid in mpi_helper.nrange(len(ukpts)):
         adapted_ji = np.where(uinv == uid)[0]
 
@@ -329,7 +325,7 @@ def _make_ao_eris_direct_gdf(agf2, eris):
             p1 = 0
             for qij_r, qij_i, sign in with_df.sr_loop(kpts[[ki,kj]], compact=False):
                 p0, p1 = p1, p1 + qij_r.shape[0] 
-                bra[ki,kj,p0:p1] = (qij_r - qij_i * 1j) / np.sqrt(nkpts)  #TODO: + or - ?
+                bra[ki,kj,p0:p1] = (qij_r - qij_i * 1j) / np.sqrt(nkpts)
 
             for kk in range(nkpts):
                 kl = kconserv[ki,kj,kk]
@@ -419,7 +415,6 @@ def _make_mo_eris_direct(agf2, mo_coeff=None):
     qij = np.zeros((nkpts, nkpts, naux, nmo**2), dtype=dtype)
     qkl = np.zeros((nkpts, nkpts, nkpts, naux, nmo**2), dtype=dtype)
 
-    #for uid, kpt in enumerate(ukpts):
     for uid in mpi_helper.nrange(len(ukpts)):
         q = ukpts[uid]
         adapted_ji = np.where(uinv == uid)[0]
@@ -454,8 +449,8 @@ def _make_qmo_eris_incore(agf2, eri, coeffs, kpts):
     '''
     #return np.einsum('pqrs,qi,rj,sa->pija', eri.eri[kpts[0],kpts[1],kpts[2]], coeffs[0], coeffs[1].conj(), coeffs[2])
 
-    cput0 = (time.clock(), time.time())
-    log = logger.Logger(agf2.stdout, agf2.verbose)
+    #cput0 = (time.clock(), time.time())
+    #log = logger.Logger(agf2.stdout, agf2.verbose)
 
     kx, ki, kj, ka = kpts
     ci, cj, ca = coeffs
@@ -479,8 +474,8 @@ def _make_qmo_eris_direct(agf2, eri, coeffs, kpts):
     #return (np.einsum('lpq,qi->lpi', eri.qij[kpts[0],kpts[1]].reshape(-1, eri.nmo, eri.nmo), coeffs[0].conj()).reshape(-1, eri.nmo*coeffs[0].shape[1]), 
     #        np.einsum('lpq,pi,qj->lij', eri.qkl[kpts[0],kpts[1],kpts[2]].reshape(-1, eri.nmo, eri.nmo), coeffs[1].conj(), coeffs[2]).reshape(-1, coeffs[1].shape[1]*coeffs[2].shape[1]))
 
-    cput0 = (time.clock(), time.time())
-    log = logger.Logger(agf2.stdout, agf2.verbose)
+    #cput0 = (time.clock(), time.time())
+    #log = logger.Logger(agf2.stdout, agf2.verbose)
 
     kx, ki, kj, ka = kpts
     ci, cj, ca = coeffs
