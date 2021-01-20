@@ -570,15 +570,10 @@ class UAGF2(ragf2.RAGF2):
         se_occ_a, se_occ_b = (se[0].get_occupied(), se[1].get_occupied())
         se_vir_a, se_vir_b = (se[0].get_virtual(), se[1].get_virtual())
 
-        vv_occ_a = np.dot(se_occ_a.coupling, se_occ_a.coupling.T)
-        vv_occ_b = np.dot(se_occ_b.coupling, se_occ_b.coupling.T)
-        vv_vir_a = np.dot(se_vir_a.coupling, se_vir_a.coupling.T)
-        vv_vir_b = np.dot(se_vir_b.coupling, se_vir_b.coupling.T)
-
-        vev_occ_a = np.dot(se_occ_a.coupling * se_occ_a.energy[None], se_occ_a.coupling.T)
-        vev_occ_b = np.dot(se_occ_b.coupling * se_occ_b.energy[None], se_occ_b.coupling.T)
-        vev_vir_a = np.dot(se_vir_a.coupling * se_vir_a.energy[None], se_vir_a.coupling.T)
-        vev_vir_b = np.dot(se_vir_b.coupling * se_vir_b.energy[None], se_vir_b.coupling.T)
+        vv_occ_a, vev_occ_a = se_occ_a.moment(range(2))
+        vv_occ_b, vev_occ_b = se_occ_b.moment(range(2))
+        vv_vir_a, vev_vir_a = se_vir_a.moment(range(2))
+        vv_vir_b, vev_vir_b = se_vir_b.moment(range(2))
 
         dat = np.array([vv_occ_a, vv_vir_a, vev_occ_a, vev_vir_a,
                         vv_occ_b, vv_vir_b, vev_occ_b, vev_vir_b])

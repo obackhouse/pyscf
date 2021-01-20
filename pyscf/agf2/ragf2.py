@@ -703,11 +703,8 @@ class RAGF2(lib.StreamObject):
         se_occ = se.get_occupied()
         se_vir = se.get_virtual()
 
-        vv_occ = np.dot(se_occ.coupling, se_occ.coupling.T)
-        vv_vir = np.dot(se_vir.coupling, se_vir.coupling.T)
-
-        vev_occ = np.dot(se_occ.coupling * se_occ.energy[None], se_occ.coupling.T)
-        vev_vir = np.dot(se_vir.coupling * se_vir.energy[None], se_vir.coupling.T)
+        vv_occ, vev_occ = se_occ.moment(range(2))
+        vv_vir, vev_vir = se_vir.moment(range(2))
 
         dat = np.array([vv_occ, vv_vir, vev_occ, vev_vir])
         dat = diis.update(dat)
