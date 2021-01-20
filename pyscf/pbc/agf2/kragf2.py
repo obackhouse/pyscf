@@ -45,6 +45,8 @@ from pyscf.pbc.mp.kmp2 import get_nocc, get_nmo, get_frozen_mask, \
 #TODO: should we track convergence via etot?
 #TODO: clean molecular fock loop, repeated eig
 
+#NOTE: agf2.nmo is .max()'d, must all be the same, whilst agf2.nocc is per-kpoint and can be different
+
 
 #NOTE: printing IPs and EAs doesn't work with ragf2 kernel - fix later for better inheritance 
 def kernel(agf2, eri=None, gf=None, se=None, verbose=None, dump_chk=True):
@@ -77,6 +79,7 @@ def kernel(agf2, eri=None, gf=None, se=None, verbose=None, dump_chk=True):
         diis = None
 
     e_init = agf2.energy_mp2(agf2.mo_energy, se)
+    #e_init = agf2.energy_2body(gf, se) / 2
     log.info('E(init) = %.16g  E_corr(init) = %.16g', e_init+eri.e_hf, e_init)
 
     e_1b = eri.e_hf
@@ -571,7 +574,9 @@ def energy_2body(agf2, gf, se):
     for g, s in zip(gf, se):
         e2b += ragf2.energy_2body(agf2, g, s)
 
-    e2b /= len(gf)
+    #TODO: be consistent with E(mp2)
+    e2b *= len(gf)
+    #e2b /= len(gf)
 
     return e2b
 
@@ -599,7 +604,11 @@ def energy_mp2(agf2, mo_energy, se, return_mean=True):
     for mo, s in zip(mo_energy, se):
         emp2 += ragf2.energy_mp2(agf2, mo, s)
 
-    emp2 /= len(se)
+    #TODO: this seems to need to be multiplied and not divided - derive this.
+    # was it always like this or have I changed something...?
+    # should the factor be in the self-energy couplings instead?
+    #emp2 /= len(se)
+    emp2 *= len(se)
 
     return emp2
 
@@ -717,9 +726,9 @@ class KRAGF2(ragf2.RAGF2):
         if se is None: se = self.build_se(gf=self.gf)
 
         #TODO: should this be the adjusted/exxdiv energies?
-        mo_energy = padded_mo_energy(self, mo_energy)
+        #mo_energy = padded_mo_energy(self, mo_energy)
 
-        self.e_init = energy_mp2(self, mo_energy, se)
+        self.e_init = energy_mp2(self, self.mo_energy, se)
 
         return self.e_init
 
@@ -740,8 +749,8 @@ class KRAGF2(ragf2.RAGF2):
 
         nkpts = self.nkpts
         nmo = self.nmo
-        nocc = get_nocc(self, per_kpoint=True)
-        energy = padded_mo_energy(self, eri.mo_energy)
+        nocc = self.nocc
+        energy = self.mo_energy  # unpadded
         coupling = np.eye(nmo)
 
         gf = []
@@ -749,9 +758,9 @@ class KRAGF2(ragf2.RAGF2):
         for kx in range(nkpts):
             #FIXME: I think that we need this because in k-space we can have fully occ or fully vir?
             if nocc[kx] == 0:
-                chempot = energy[0] - 1e-6
+                chempot = energy[kx][0] - 1e-6
             elif nocc[kx] == nmo:
-                chempot = energy[-1] + 1e-6
+                chempot = energy[kx][-1] + 1e-6
             else:
                 chempot = binsearch_chempot(np.diag(energy[kx]), nmo, nocc[kx]*2)[0]
 
@@ -1085,11 +1094,14 @@ class KRAGF2(ragf2.RAGF2):
 
     @property
     def nmo(self):
-        return self.get_nmo()
+        _nmo = self.get_nmo(per_kpoint=True)
+        if not all([x==_nmo[0] for x in _nmo]):
+            raise NotImplementedError('Different nmo at each k-point') #TODO move
+        return _nmo[0]
 
     @property
     def nocc(self):
-        return self.get_nocc()
+        return self.get_nocc(per_kpoint=True)
 
     @property
     def nkpts(self):
@@ -1110,8 +1122,7 @@ class KRAGF2(ragf2.RAGF2):
     @property
     def qmo_coeff(self):
         ''' Gives the couplings in AO basis '''
-        mo_energy = padded_mo_energy(self, self.mo_energy)
-        return [np.dot(mo, x.coupling) for mo,x in zip(mo_energy, self.gf)]
+        return [np.dot(mo, x.coupling) for mo,x in zip(self.mo_coeff, self.gf)]
 
     @property
     def qmo_occ(self):
@@ -1149,9 +1160,9 @@ if __name__ == '__main__':
         eri1 = eri.eri
         eri2 = rhf.with_df.ao2mo_7d(np.asarray(rhf.mo_coeff)+0j, kpts=rhf.kpts) / len(rhf.kpts)
 
-        ci = np.random.random((gf2.nmo, gf2.nocc*2)) + 1.0j * np.random.random((gf2.nmo, gf2.nocc*2)) 
-        cj = np.random.random((gf2.nmo, gf2.nocc*2)) + 1.0j * np.random.random((gf2.nmo, gf2.nocc*2))  
-        ca = np.random.random((gf2.nmo, (gf2.nmo-gf2.nocc)*2)) + 1.0j * np.random.random((gf2.nmo, (gf2.nmo-gf2.nocc)*2))
+        ci = np.random.random((gf2.nmo, max(gf2.nocc)*2)) + 1.0j * np.random.random((gf2.nmo, max(gf2.nocc)*2)) 
+        cj = np.random.random((gf2.nmo, max(gf2.nocc)*2)) + 1.0j * np.random.random((gf2.nmo, max(gf2.nocc)*2))  
+        ca = np.random.random((gf2.nmo, (gf2.nmo-max(gf2.nocc))*2)) + 1.0j * np.random.random((gf2.nmo, (gf2.nmo-max(gf2.nocc))*2))
         qmo0 = np.einsum('pqrs,qi,rj,sa->pija', eri2[0,1,0], ci, cj.conj(), ca)
         qmo1_bra, qmo1_ket = kragf2_ao2mo._make_qmo_eris_direct(gf2, eri_df, (ci,cj,ca), [0,1,0,1])
         qmo1 = np.dot(qmo1_bra.conj().T, qmo1_ket).reshape(qmo0.shape)

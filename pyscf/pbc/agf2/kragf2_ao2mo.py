@@ -59,13 +59,15 @@ class _ChemistsERIs:
         if mo_coeff is None:
             mo_coeff = agf2.mo_coeff
 
-        self.mo_coeff = padded_mo_coeff(agf2, mo_coeff)
-        self.mo_energy = padded_mo_energy(agf2, agf2.mo_energy)
+        #self.mo_coeff = padded_mo_coeff(agf2, mo_coeff)
+        #self.mo_energy = padded_mo_energy(agf2, agf2.mo_energy)
+        self.mo_coeff = np.asarray(mo_coeff)
+        self.mo_energy = agf2.mo_energy
 
-        self.nmo = get_nmo(agf2, per_kpoint=False)
-        self.nocc = get_nocc(agf2, per_kpoint=False)
+        self.nmo = agf2.nmo
+        self.nocc = agf2.nocc
 
-        self.nonzero_padding = padding_k_idx(agf2, kind='joint')
+        #self.nonzero_padding = padding_k_idx(agf2, kind='joint')
         self.mol = self.cell = agf2.cell
         self.kpts = agf2.kpts
 
@@ -85,7 +87,7 @@ class _ChemistsERIs:
         if not agf2.keep_exxdiv:
             madelung = tools.madelung(agf2.cell, agf2.kpts)
             self.mo_energy = [f.diagonal().real for f in self.fock]
-            self.mo_energy = [_adjust_occ(mo_e, self.nocc, -madelung) 
+            self.mo_energy = [_adjust_occ(mo_e, self.nocc[k], -madelung) 
                               for k, mo_e in enumerate(self.mo_energy)]
 
         self.e_hf = agf2._scf.e_tot
@@ -454,14 +456,15 @@ def _make_qmo_eris_incore(agf2, eri, coeffs, kpts):
 
     kx, ki, kj, ka = kpts
     ci, cj, ca = coeffs
+    nmo = eri.nmo
 
     dtype = np.result_type(eri.eri.dtype, ci.dtype, cj.dtype, ca.dtype)
-    xija = np.zeros((eri.nmo**2, cj.shape[1], ca.shape[1]), dtype=dtype)
+    xija = np.zeros((nmo*nmo, cj.shape[1], ca.shape[1]), dtype=dtype)
 
-    mo = eri.eri[kx,ki,kj].reshape(-1, eri.nmo**2)
+    mo = eri.eri[kx,ki,kj].reshape(-1, nmo*nmo)
     xija = _fao2mo(mo, cj, ca, dtype, out=xija)
 
-    xija = xija.reshape(eri.nmo, eri.nmo, cj.shape[1], ca.shape[1])
+    xija = xija.reshape(nmo, nmo, cj.shape[1], ca.shape[1])
     xija = lib.einsum('xyja,yi->xija', xija, ci)
 
     #log.timer('QMO integral transformation', *cput0)
@@ -479,14 +482,15 @@ def _make_qmo_eris_direct(agf2, eri, coeffs, kpts):
 
     kx, ki, kj, ka = kpts
     ci, cj, ca = coeffs
+    nmo = eri.nmo
     
     dtype = np.result_type(eri.qij.dtype, eri.qkl.dtype, ci.dtype, cj.dtype, ca.dtype)
     naux = eri.eri[0].shape[2]
 
-    qwx = eri.eri[0][kx,ki].reshape(-1, eri.nmo)
+    qwx = eri.eri[0][kx,ki].reshape(-1, nmo)
     qwi = np.dot(qwx, ci.conj()).reshape(naux, -1)
 
-    qyz = eri.eri[1][kx,ki,kj].reshape(-1, eri.nmo**2)
+    qyz = eri.eri[1][kx,ki,kj].reshape(-1, nmo, nmo)
     qja = _fao2mo(qyz, cj, ca, dtype).reshape(naux, -1)
 
     #log.timer('QMO integral transformation', *cput0)
