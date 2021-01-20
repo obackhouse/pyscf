@@ -497,34 +497,6 @@ class UAGF2(ragf2.RAGF2):
 
         return gf
 
-    def build_gf(self, eri=None, gf=None, se=None):
-        ''' Builds the auxiliaries of the Green's functions by solving
-            the Dyson equation for each spin.
-
-        Kwargs:
-            eri : _ChemistsERIs
-                Electronic repulsion integrals
-            gf : tuple of GreensFunction
-                Auxiliaries of the Green's function for each spin
-            se : tuple of SelfEnergy
-                Auxiliaries of the self-energy for each spin
-
-        Returns:
-            tuple of :class:`GreensFunction`
-        '''
-
-        if eri is None: eri = self.ao2mo()
-        if gf is None: gf = self.gf
-        if gf is None: gf = self.init_gf()
-        if se is None: se = self.build_se(eri, gf)
-
-        focka, fockb = self.get_fock(eri, gf)
-
-        gf_a = se[0].get_greens_function(focka)
-        gf_b = se[1].get_greens_function(fockb)
-
-        return (gf_a, gf_b)
-
     def build_se(self, eri=None, gf=None, os_factor=None, ss_factor=None, se_prev=None):
         ''' Builds the auxiliaries of the self-energy.
 

@@ -632,31 +632,6 @@ class RAGF2(lib.StreamObject):
 
         return gf
 
-    def build_gf(self, eri=None, gf=None, se=None):
-        ''' Builds the auxiliaries of the Green's function by solving
-            the Dyson equation.
-
-        Kwargs:
-            eri : _ChemistsERIs
-                Electronic repulsion integrals
-            gf : GreensFunction
-                Auxiliaries of the Green's function
-            se : SelfEnergy
-                Auxiliaries of the self-energy
-
-        Returns:
-            :class:`GreensFunction`
-        '''
-
-        if eri is None: eri = self.ao2mo()
-        if gf is None: gf = self.gf
-        if gf is None: gf = self.init_gf()
-        if se is None: se = self.build_se(eri, gf)
-
-        fock = self.get_fock(eri, gf)
-
-        return se.get_greens_function(fock)
-
     def build_se(self, eri=None, gf=None, os_factor=None, ss_factor=None, se_prev=None):
         ''' Builds the auxiliaries of the self-energy.
 

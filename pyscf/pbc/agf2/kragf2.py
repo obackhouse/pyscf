@@ -764,36 +764,6 @@ class KRAGF2(ragf2.RAGF2):
 
         return gf
 
-    def build_gf(self, eri=None, gf=None, se=None):
-        ''' Builds the auxiliaries of the Green's function by solving
-            the Dyson equation at each k-point.
-
-        Kwargs:
-            eri : _ChemistsERIs
-                Electronic repulsion integrals
-            gf : list of GreensFunction
-                Auxiliaries of the Green's function at each k-point
-            se : list of SelfEnergy
-                Auxiliaries of the self-energy at each k-point
-
-        Returns:
-            :class:`GreensFunction` at each k-point
-        '''
-
-        if eri is None: eri = self.ao2mo()
-        if gf is None: gf = self.gf
-        if gf is None: gf = self.init_gf(eri)
-        if se is None: se = self.build_se(eri, gf)
-
-        fock = self.get_fock(eri, gf)
-
-        gf = []
-
-        for s, f in zip(se, fock):
-            gf.append(s.get_greens_function(f))
-
-        return gf
-
     def build_se(self, eri=None, gf=None, os_factor=None, ss_factor=None, se_prev=None):
         ''' Builds the auxiliaries of the self-energy at each k-point.
 
