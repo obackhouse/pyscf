@@ -36,12 +36,9 @@ from pyscf.pbc.mp.kmp2 import get_nocc, get_nmo, get_frozen_mask
 
 #TODO: change some allreduce to allgather 
 #TODO: check aft, this may be broken?
-#TODO: remove build_gf from this and molecular code
-#TODO: fix kernel buf with self in this and molecular code
 #TODO: change agf2 object to gf2 and molecular code
 #TODO: fix molecular code DIIS to use the Aux.moment function
 #TODO: should we track convergence via etot?
-#TODO: clean molecular fock loop, repeated eig
 
 #NOTE: agf2.nmo is .max()'d, must all be the same, whilst agf2.nocc is per-kpoint and can be different
 
@@ -191,7 +188,9 @@ def build_se_part(agf2, eri, gf_occ, gf_vir, os_factor=1.0, ss_factor=1.0):
             qxi, qja = fmo2qmo(agf2, eri, (ci,cj,ca), (kx,ki,kj,ka))
             qxj, qia = fmo2qmo(agf2, eri, (cj,ci,ca), (kx,kj,ki,ka))
 
-            vv[kx], vev[kx] = _kagf2.build_mats_kragf2_direct(qxi, qja, qxj, qia, ei, ej, ea, **facs)
+            vv_k, vev_k = _kagf2.build_mats_kragf2_direct(qxi, qja, qxj, qia, ei, ej, ea, **facs)
+            vv[kx] += vv_k
+            vev[kx] += vev_k
 
     else:
         for kxia in mpi_helper.nrange(nkpts**3):
@@ -206,8 +205,9 @@ def build_se_part(agf2, eri, gf_occ, gf_vir, os_factor=1.0, ss_factor=1.0):
             pija = fmo2qmo(agf2, eri, (ci,cj,ca), (kx,ki,kj,ka))
             pjia = fmo2qmo(agf2, eri, (cj,ci,ca), (kx,kj,ki,ka))
 
-            vv[kx], vev[kx] = _kagf2.build_mats_kragf2_incore(pija, pjia, ei, ej, ea, **facs)
-
+            vv_k, vev_k = _kagf2.build_mats_kragf2_incore(pija, pjia, ei, ej, ea, **facs)
+            vv[kx] += vv_k
+            vev[kx] += vev_k
 
     mpi_helper.barrier()
     for kx in range(nkpts):
@@ -572,9 +572,7 @@ def energy_2body(agf2, gf, se):
     for g, s in zip(gf, se):
         e2b += ragf2.energy_2body(agf2, g, s)
 
-    #TODO: be consistent with E(mp2)
-    e2b *= len(gf)
-    #e2b /= len(gf)
+    e2b /= len(gf)
 
     return e2b
 
@@ -602,11 +600,7 @@ def energy_mp2(agf2, mo_energy, se, return_mean=True):
     for mo, s in zip(mo_energy, se):
         emp2 += ragf2.energy_mp2(agf2, mo, s)
 
-    #TODO: this seems to need to be multiplied and not divided - derive this.
-    # was it always like this or have I changed something...?
-    # should the factor be in the self-energy couplings instead?
-    #emp2 /= len(se)
-    emp2 *= len(se)
+    emp2 /= len(se)
 
     return emp2
 
