@@ -312,8 +312,6 @@ def fock_loop(agf2, eri, gf, se):
         for niter2 in range(1, agf2.max_cycle_inner+1):
             w, v = se.eig(fock, chempot=0.0, out=buf)
             se.chempot, nerr = binsearch_chempot((w, v), nmo, nelec)
-
-            w, v = se.eig(fock, out=buf)
             gf = aux.GreensFunction(w, v[:nmo], chempot=se.chempot)
 
             fock = agf2.get_fock(eri, gf)

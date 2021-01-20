@@ -220,9 +220,6 @@ def fock_loop(agf2, eri, gf, se):
             seb.chempot, nerrb = \
                     binsearch_chempot((wb, vb), nmob, nbeta, occupancy=1)
             nerr = max(nerra, nerrb)
-
-            wa, va = sea.eig(focka, out=bufa)
-            wb, vb = seb.eig(fockb, out=bufb)
             gfa = aux.GreensFunction(wa, va[:nmoa], chempot=sea.chempot)
             gfb = aux.GreensFunction(wb, vb[:nmob], chempot=seb.chempot)
 
