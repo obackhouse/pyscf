@@ -32,10 +32,8 @@ from pyscf.pbc.lib import kpts_helper
 from pyscf.pbc.agf2 import kragf2_ao2mo, _kagf2
 from pyscf.agf2 import aux, ragf2, _agf2, mpi_helper
 from pyscf.agf2.chempot import binsearch_chempot, minimize_chempot
-from pyscf.pbc.mp.kmp2 import get_nocc, get_nmo, get_frozen_mask, \
-                              padded_mo_coeff, padded_mo_energy
+from pyscf.pbc.mp.kmp2 import get_nocc, get_nmo, get_frozen_mask
 
-#TODO: memory warning if direct=False
 #TODO: change some allreduce to allgather 
 #TODO: check aft, this may be broken?
 #TODO: remove build_gf from this and molecular code
@@ -56,8 +54,8 @@ def kernel(agf2, eri=None, gf=None, se=None, verbose=None, dump_chk=True):
     name = agf2.__class__.__name__
 
     if eri is None: eri = agf2.ao2mo()
-    if gf is None: gf = self.gf
-    if se is None: se = self.se
+    if gf is None: gf = agf2.gf
+    if se is None: se = agf2.se
     if verbose is None: verbose = agf2.verbose
 
     if gf is None:
@@ -726,13 +724,11 @@ class KRAGF2(ragf2.RAGF2):
         if se is None: se = self.build_se(gf=self.gf)
 
         #TODO: should this be the adjusted/exxdiv energies?
-        #mo_energy = padded_mo_energy(self, mo_energy)
 
         self.e_init = energy_mp2(self, self.mo_energy, se)
 
         return self.e_init
 
-    #TODO: perhaps this would be best c.f. frozen where we can have padded coupled to non-padded?
     #TODO: frozen
     def init_gf(self, eri=None):
         ''' Builds the Hartree-Fock Green's function.
@@ -750,7 +746,7 @@ class KRAGF2(ragf2.RAGF2):
         nkpts = self.nkpts
         nmo = self.nmo
         nocc = self.nocc
-        energy = self.mo_energy  # unpadded
+        energy = self.mo_energy
         coupling = np.eye(nmo)
 
         gf = []
