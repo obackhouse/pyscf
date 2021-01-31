@@ -229,7 +229,7 @@ def build_se_part(agf2, eri, gf_occ, gf_vir, os_factor=1.0, ss_factor=1.0):
 #TODO: can we adapt these k-space get_jk functions to point-group symmetry easily?
 #TODO: maybe optimised with pyscf lib
 #NOTE: should we fuse loops?
-def get_jk_direct(agf2, eri, rdm1, with_j=True, with_k=True):
+def get_jk_direct(agf2, eri, rdm1, with_j=True, with_k=True, madelung=None):
     ''' Get the J/K matrices.
 
     Args:
@@ -244,6 +244,8 @@ def get_jk_direct(agf2, eri, rdm1, with_j=True, with_k=True):
             Whether to compute J. Default value is True
         with_k : bool
             Whether to compute K. Default value is True
+        madelung : list of 2D array
+            Result of tools.pbc.madelung(cell, kpts)
 
     Returns:
         tuple of ndarrays corresponding to J and K at each k-point,
@@ -294,14 +296,14 @@ def get_jk_direct(agf2, eri, rdm1, with_j=True, with_k=True):
 
         #NOTE: should keep_exxdiv even be considered here?
         if agf2.keep_exxdiv and agf2._scf.exxdiv == 'ewald':
-            vk += get_ewald(agf2, rdm1)
+            vk += get_ewald(agf2, rdm1, madelung=madelung)
 
     return vj, vk
 
 
 #TODO: check
 #TODO: optimise
-def get_jk_incore(agf2, eri, rdm1, with_j=True, with_k=True):
+def get_jk_incore(agf2, eri, rdm1, with_j=True, with_k=True, madelung=None):
     ''' Get the J/K matrices.
 
     Args:
@@ -316,6 +318,8 @@ def get_jk_incore(agf2, eri, rdm1, with_j=True, with_k=True):
             Whether to compute J. Default value is True
         with_k : bool
             Whether to compute K. Default value is True
+        madelung : list of 2D array
+            Result of tools.pbc.madelung(cell, kpts)
 
     Returns:
         tuple of ndarrays corresponding to J and K at each k-point,
@@ -356,21 +360,21 @@ def get_jk_incore(agf2, eri, rdm1, with_j=True, with_k=True):
 
         #NOTE: should keep_exxdiv even be considered here?
         if agf2.keep_exxdiv and agf2._scf.exxdiv == 'ewald':
-            vk += np.array(get_ewald(agf2, rdm1))
+            vk += get_ewald(agf2, rdm1, madelung=madelung)
 
     return vj, vk
 
 
-def get_jk(agf2, eri, rdm1, with_j=True, with_k=True):
+def get_jk(agf2, eri, rdm1, with_j=True, with_k=True, madelung=None):
     if isinstance(eri, (tuple, list)):
-        vj, vk = get_jk_direct(agf2, eri, rdm1, with_j=with_j, with_k=with_k)
+        vj, vk = get_jk_direct(agf2, eri, rdm1, with_j=with_j, with_k=with_k, madelung=madelung)
     else:
-        vj, vk = get_jk_incore(agf2, eri, rdm1, with_j=with_j, with_k=with_k)
+        vj, vk = get_jk_incore(agf2, eri, rdm1, with_j=with_j, with_k=with_k, madelung=madelung)
 
     return vj, vk
     
 
-def get_ewald(agf2, rdm1):
+def get_ewald(agf2, rdm1, madelung=None):
     ''' Get the Ewald exchange contribution. The density matrix is
         assumed to be in MO basis, i.e. the overlap is identity.
 
@@ -378,17 +382,23 @@ def get_ewald(agf2, rdm1):
         rdm1 : list of 2D array
             Reduced density matrix at each k-point
 
+    Kwargs:
+        madelung : list of 2D array
+            Result of tools.pbc.madelung(cell, kpts)
+
     Returns:
         ndarray of Ewald exchange contribution at each k-point
     '''
 
-    madelung = tools.pbc.madelung(agf2.cell, agf2.kpts)
+    if madelung is None:
+        madelung = tools.pbc.madelung(agf2.cell, agf2.kpts)
+
     ewald = [madelung * x for x in rdm1]
 
     return ewald
 
 
-def get_fock(agf2, eri, gf=None, rdm1=None):
+def get_fock(agf2, eri, gf=None, rdm1=None, madelung=None):
     ''' Computes the physical space Fock matrix in MO basis at each
         k-point. If :attr:`rdm1` is not supplied, it is built from
         :attr:`gf`, which defaults the the mean-field Green's function
@@ -403,6 +413,8 @@ def get_fock(agf2, eri, gf=None, rdm1=None):
             Auxiliaries of the Green's function at each k-point
         rdm1 : list of 2D array
             Reduced density matrix at each k-point
+        madelung : list of 2D array
+            Result of tools.pbc.madelung(cell, kpts)
 
     Returns:
         ndarray of physical space Fock matrix at each k-point
@@ -411,7 +423,7 @@ def get_fock(agf2, eri, gf=None, rdm1=None):
     if rdm1 is None:
         rdm1 = agf2.make_rdm1(gf)
 
-    vj, vk = agf2.get_jk(eri.eri, rdm1)
+    vj, vk = agf2.get_jk(eri.eri, rdm1, madelung=madelung)
     fock = np.array(eri.h1e) + vj - 0.5 * vk
 
     return fock
@@ -465,7 +477,7 @@ def fock_loop(agf2, eri, gf, se, nelec_per_kpt=None):
     diis = lib.diis.DIIS(agf2)
     diis.space = agf2.diis_space
     diis.min_space = agf2.diis_min_space
-    fock = agf2.get_fock(eri, gf)
+    fock = agf2.get_fock(eri, gf, madelung=madelung)
     madelung = tools.madelung(agf2.cell, agf2.kpts)
 
     if nelec_per_kpt is None:
@@ -495,7 +507,7 @@ def fock_loop(agf2, eri, gf, se, nelec_per_kpt=None):
                 gf[kx] = aux.GreensFunction(w, v[:nmo], chempot=se[kx].chempot)
                 gf[kx].remove_uncoupled(tol=agf2.weight_tol)
 
-            fock = agf2.get_fock(eri, gf)
+            fock = agf2.get_fock(eri, gf, madelung=madelung)
             rdm1 = agf2.make_rdm1(gf)
             fock = diis.update(fock, xerr=None)
 
@@ -703,7 +715,7 @@ class KRAGF2(ragf2.RAGF2):
 
         return rdm1
 
-    def get_fock(self, eri=None, gf=None, rdm1=None):
+    def get_fock(self, eri=None, gf=None, rdm1=None, madelung=None):
         ''' Computes the physical space Fock matrix in MO basis at
             each k-point.
         '''
@@ -711,7 +723,7 @@ class KRAGF2(ragf2.RAGF2):
         if eri is None: eri = self.ao2mo()
         if gf is None: gf = self.gf
 
-        return get_fock(self, eri, gf=gf, rdm1=rdm1)
+        return get_fock(self, eri, gf=gf, rdm1=rdm1, madelung=madelung)
 
     def energy_mp2(self, mo_energy=None, se=None):
         if mo_energy is None: mo_energy = self.mo_energy
