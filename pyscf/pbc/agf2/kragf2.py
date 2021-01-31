@@ -477,8 +477,8 @@ def fock_loop(agf2, eri, gf, se, nelec_per_kpt=None):
     diis = lib.diis.DIIS(agf2)
     diis.space = agf2.diis_space
     diis.min_space = agf2.diis_min_space
-    fock = agf2.get_fock(eri, gf, madelung=madelung)
     madelung = tools.madelung(agf2.cell, agf2.kpts)
+    fock = agf2.get_fock(eri, gf, madelung=madelung)
 
     if nelec_per_kpt is None:
         nelec_per_kpt = np.array(get_nocc(agf2, per_kpoint=True)) * 2
