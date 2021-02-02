@@ -154,8 +154,10 @@ def _make_j3c(mydf, cell, auxcell, kptij_lst, cderi_file):
     # separated temporary file can avoid this issue.  The DF intermediates may
     # be terribly huge. The temporary file should be placed in the same disk
     # as cderi_file.
+    h5_driver = 'core' if cell.incore_anyway else None
+    h5_kw = dict(backing_store=False) if cell.incore_anyway else {}
     swapfile = tempfile.NamedTemporaryFile(dir=os.path.dirname(cderi_file))
-    fswap = lib.H5TmpFile(swapfile.name)
+    fswap = lib.H5TmpFile(swapfile.name, driver=h5_driver, **h5_kw)
     # Unlink swapfile to avoid trash
     swapfile = None
 
@@ -233,7 +235,7 @@ def _make_j3c(mydf, cell, auxcell, kptij_lst, cderi_file):
             j2ctag = 'eig'
         return j2c, j2c_negative, j2ctag
 
-    feri = h5py.File(cderi_file, 'w')
+    feri = h5py.File(cderi_file, 'w', driver=h5_driver, **h5_kw)
     feri['j3c-kptij'] = kptij_lst
     nsegs = len(fswap['j3c-junk/0'])
     def make_kpt(uniq_kptji_id, cholesky_j2c):
@@ -402,7 +404,10 @@ def _make_j3c(mydf, cell, auxcell, kptij_lst, cderi_file):
                 make_kpt(uniq_kptji_id, cholesky_j2c)
         done[uniq_kptji_ids] = True
 
-    feri.close()
+    if cell.incore_anyway:
+        return feri
+    else:
+        feri.close()
 
 
 class GDF(aft.AFTDF):
@@ -565,7 +570,9 @@ class GDF(aft.AFTDF):
                                 cderi)
             self._cderi = cderi
             t1 = (time.clock(), time.time())
-            self._make_j3c(self.cell, self.auxcell, kptij_lst, cderi)
+            out = self._make_j3c(self.cell, self.auxcell, kptij_lst, cderi)
+            if self.cell.incore_anyway:
+                self._cderi = out
             t1 = logger.timer_debug1(self, 'j3c', *t1)
         return self
 
@@ -869,7 +876,10 @@ class _load3c(object):
         self.ignore_key_error = ignore_key_error
 
     def __enter__(self):
-        self.feri = h5py.File(self.cderi, 'r')
+        if isinstance(self.cderi, str):
+            self.feri = h5py.File(self.cderi, 'r')
+        else:
+            self.feri = self.cderi
         if self.label not in self.feri:
             # Return a size-0 array to skip the loop in sr_loop
             if self.ignore_key_error:
@@ -883,7 +893,8 @@ class _load3c(object):
                         self.ignore_key_error)
 
     def __exit__(self, type, value, traceback):
-        self.feri.close()
+        if isinstance(self.cderi, str):
+            self.feri.close()
 
 def _getitem(h5group, label, kpti_kptj, kptij_lst, ignore_key_error=False):
     k_id = member(kpti_kptj, kptij_lst)
