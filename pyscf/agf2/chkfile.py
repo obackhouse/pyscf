@@ -28,6 +28,7 @@ from pyscf.lib import logger
 from pyscf import __config__
 from pyscf import gto
 from pyscf.lib import chkfile as chkutil
+from pyscf.pbc.lib import chkfile as pbc_chkutil
 from pyscf.agf2.aux import GreensFunction, SelfEnergy
 from pyscf.agf2 import mpi_helper
 
@@ -68,6 +69,25 @@ def load_mol(chkfile):
     return mol
 
 
+def load_cell(chkfile):
+    ''' Load the cell from the chkfile.
+    
+    See pyscf.pbc.lib.chkfile
+    '''
+
+    if mpi_helper.rank == 0:
+        cell = pbc_chkutil.load_cell(chkfile)
+        dumps = cell.dumps()
+    else:
+        dumps = None
+
+    mpi_helper.barrier()
+    dumps = mpi_helper.bcast_dict(dumps)
+    cell = gto.loads(dumps)
+
+    return cell
+
+
 def load_agf2(chkfile):
     ''' Load the AGF2 data from the chkfile.
     '''
@@ -87,7 +107,7 @@ def load_agf2(chkfile):
         gfa, gfb = dic['gfa'], dic['gfb']
         dic['gf'] = (GreensFunction(gfa['energy'], gfa['coupling'], chempot=gfa['chempot']),
                      GreensFunction(gfb['energy'], gfb['coupling'], chempot=gfb['chempot']))
-        del(dic['gfa'], dic['gfb'])
+        del dic['gfa'], dic['gfb']
 
     if 'se' in dic:
         se = dic['se']
@@ -96,11 +116,11 @@ def load_agf2(chkfile):
         sea, seb = dic['sea'], dic['seb']
         dic['se'] = (SelfEnergy(sea['energy'], sea['coupling'], chempot=sea['chempot']),
                      SelfEnergy(seb['energy'], seb['coupling'], chempot=seb['chempot']))
-        del(dic['sea'], dic['seb'])
+        del dic['sea'], dic['seb']
 
     if 'ngf' in dic:
         dic['nmom'] = (dic.get('ngf', None), dic.get('nse', None))
-        del(dic['ngf'], dic['nse'])
+        del dic['ngf'], dic['nse']
 
     return load_mol(chkfile), dic
 
@@ -127,7 +147,7 @@ def dump_agf2(agf2, chkfile=None, key='agf2',
     if h5py.is_hdf5(chkfile):
         fh5 = h5py.File(chkfile, 'a')
         if key in fh5:
-            del(fh5[key])
+            del fh5[key]
     else:
         fh5 = h5py.File(chkfile, 'w')
 
@@ -181,6 +201,131 @@ def dump_agf2(agf2, chkfile=None, key='agf2',
         ngf, nse = nmom
         store('ngf', ngf)
         store('nse', nse)
+
+    fh5.close()
+
+    return agf2
+
+
+def load_kagf2(chkfile):
+    ''' Load the KAGF2 data from the chkfile.
+    '''
+
+    if mpi_helper.rank == 0:
+        dic = chkutil.load(chkfile, 'kagf2')
+    else:
+        dic = None
+
+    mpi_helper.barrier()
+    dic = mpi_helper.bcast_dict(dic)
+
+    nkpts = len(dic['kpts'])
+
+    def unpack(d):
+        return [d['%s'%k] for k in range(nkpts)]
+
+    if 'gf' in dic:
+        gf = dic['gf']
+        energy = np.array(unpack(gf['energy']))
+        coupling = np.array(unpack(gf['coupling']))
+        chempot = np.array(unpack(gf['chempot']))
+        dic['gf'] = [GreensFunction(e, v, chempot=c) \
+                     for e,v,c in zip(energy, coupling, chempot)]
+    elif 'gfa' in dic:
+        raise NotImplementedError
+
+    if 'se' in dic:
+        se = dic['se']
+        energy = np.array([se['energy']['%s'%k] for k in range(nkpts)])
+        coupling = np.array([se['coupling']['%s'%k] for k in range(nkpts)])
+        chempot = np.array([se['chempot']['%s'%k] for k in range(nkpts)])
+        dic['se'] = [SelfEnergy(e, v, chempot=c) \
+                     for e,v,c in zip(energy, coupling, chempot)]
+    elif 'sea' in dic:
+        raise NotImplementedError
+
+    if 'ngf' in dic:
+        dic['nmom'] = (dic.get('ngf', None), dic.get('nse', None))
+        del dic['ngf'], dic['nse']
+
+    dic['mo_energy'] = unpack(dic['mo_energy'])
+    dic['mo_coeff'] = unpack(dic['mo_coeff'])
+    dic['mo_occ'] = unpack(dic['mo_occ'])
+    
+    return load_cell(chkfile), dic
+
+
+def dump_kagf2(agf2, chkfile=None, key='kagf2',
+               kpts=None, gf=None, se=None, nmom=None,
+               mo_energy=None, mo_coeff=None, mo_occ=None):
+    ''' Save the KAGF2 calculation to a chkfile.
+    '''
+
+    if mpi_helper.rank != 0:
+        return agf2
+
+    if chkfile is None: chkfile = agf2.chkfile
+
+    if kpts is None: kpts = agf2.kpts
+    if gf is None: gf = agf2.gf
+    if se is None: se = agf2.se
+    #if frozen is None: frozen = agf2.frozen
+    if mo_energy is None: mo_energy = agf2.mo_energy
+    if mo_coeff is None: mo_coeff = agf2.mo_coeff
+    if mo_occ is None: mo_occ = agf2.mo_occ
+
+    if h5py.is_hdf5(chkfile):
+        fh5 = h5py.File(chkfile, 'a')
+        if key in fh5:
+            del fh5[key]
+    else:
+        fh5 = h5py.File(chkfile, 'w')
+
+    if 'mol' not in fh5:
+        fh5['mol'] = agf2.cell.dumps()
+
+    def store(subkey, k, val):
+        if val is not None:
+            full_key = key + '/' + subkey
+            if k is not None:
+                full_key = full_key + '/%d'%k
+            fh5[full_key] = val
+
+    store('kpts', None, kpts)
+    store('e_1b', None, agf2.e_1b)
+    store('e_2b', None, agf2.e_2b)
+    store('e_init', None, agf2.e_init)
+    store('converged', None, agf2.converged)
+
+    for k in range(len(kpts)):
+        store('mo_energy', k, mo_energy[k])
+        store('mo_coeff', k, mo_coeff[k])
+        store('mo_occ', k, mo_occ[k])
+
+    if gf is not None:
+        if isinstance(gf[0], GreensFunction):
+            for k in range(len(kpts)):
+                store('gf/energy', k, gf[k].energy)
+                store('gf/coupling', k, gf[k].coupling)
+                store('gf/chempot', k, gf[k].chempot)
+        else:
+            raise NotImplementedError
+
+    if se is not None:
+        if isinstance(se[0], SelfEnergy):
+            for k in range(len(kpts)):
+                store('se/energy', k, se[k].energy)
+                store('se/coupling', k, se[k].coupling)
+                store('se/chempot', k, se[k].chempot)
+        else:
+            raise NotImplementedError
+
+    if getattr(agf2, 'nmom', None) is not None:
+        if nmom is None:
+            nmom = agf2.nmom
+        ngf, nse = nmom
+        store('ngf', None, ngf)
+        store('nse', None, nse)
 
     fh5.close()
 

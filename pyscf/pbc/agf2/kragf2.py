@@ -30,7 +30,7 @@ from pyscf import ao2mo
 from pyscf.pbc import tools
 from pyscf.pbc.lib import kpts_helper
 from pyscf.pbc.agf2 import kragf2_ao2mo, _kagf2
-from pyscf.agf2 import aux, ragf2, _agf2, mpi_helper
+from pyscf.agf2 import aux, ragf2, _agf2, mpi_helper, chkfile as chkutil
 from pyscf.agf2.chempot import binsearch_chempot, minimize_chempot
 from pyscf.pbc.mp.kmp2 import get_nocc, get_nmo, get_frozen_mask
 
@@ -955,12 +955,19 @@ class KRAGF2(ragf2.RAGF2):
 
         return self.converged, self.e_1b, self.e_2b, self.gf, self.se
 
-    #TODO
-    def dump_chk(self, chkfile=None, key='kagf2', gf=None, se=None, frozen=None, nmom=None, mo_energy=None, mo_coeff=None, mo_occ=None):
+    def dump_chk(self, chkfile=None, key='kagf2', kpts=None, gf=None, se=None, nmom=None, mo_energy=None, mo_coeff=None, mo_occ=None):
+        chkutil.dump_kagf2(self, chkfile, key,
+                           kpts, gf, se, None,
+                           mo_energy, mo_coeff, mo_occ)
         return self
 
-    #TODO
     def update_from_chk_(self, chkfile=None, key='agf2'):
+        if chkfile is None:
+            chkfile = self.chkfile
+
+        mol, agf2_dict = chkutil.load_kagf2(chkfile, key)
+        self.__dict__.update(agf2_dict)
+
         return self
 
     update = update_from_chk = update_from_chk_
