@@ -36,6 +36,7 @@ from pyscf.pbc.mp.kmp2 import get_nocc, get_nmo, padding_k_idx, \
 
 
 #TODO: parallelise get_hcore and get_veff
+#NOTE: is mo_energy and fock even used...? pointless...
 class _ChemistsERIs:
     ''' (pq|rs)
 
@@ -208,6 +209,11 @@ def _make_ao_eris_direct_aftdf(agf2, eris):
     ngrids = len(cell.gen_uniform_grids(with_df.mesh))
     nao = cell.nao
     kconserv = tools.get_kconserv(cell, kpts)
+    if agf2.keep_exxdiv and agf2._scf.exxdiv in ['vcut_sph', 'vcut_ws']:
+        #TODO: test
+        exxdiv = agf2._scf.exxdiv
+    else:
+        exxdiv = False
     
     bra = np.zeros((nkpts, nkpts, ngrids, cell.nao**2), dtype=dtype)
     ket = np.zeros((nkpts, nkpts, nkpts, ngrids, cell.nao**2), dtype=dtype)
@@ -221,7 +227,7 @@ def _make_ao_eris_direct_aftdf(agf2, eris):
         q = ukpts[uid]
         adapted_ji = np.where(uinv == uid)[0]
         kjs = kij[:,1][adapted_ji]
-        fac = with_df.weighted_coulG(q, False, with_df.mesh) / nkpts
+        fac = with_df.weighted_coulG(q, exx=exxdiv, mesh=with_df.mesh) / nkpts
 
         for aoaoks, p0, p1 in with_df.ft_loop(with_df.mesh, q, kjs):
             for ji, aoao in enumerate(aoaoks):
@@ -256,6 +262,11 @@ def _make_ao_eris_direct_fftdf(agf2, eris):
     coords = cell.gen_uniform_grids(with_df.mesh)
     aos = with_df._numint.eval_ao(cell, coords, kpts)
     ngrids = len(coords)
+    if agf2.keep_exxdiv and agf2._scf.exxdiv in ['vcut_sph', 'vcut_ws']:
+        #TODO: test
+        exxdiv = agf2._scf.exxdiv
+    else:
+        exxdiv = False
 
     bra = np.zeros((nkpts, nkpts, ngrids, cell.nao**2), dtype=dtype)
     ket = np.zeros((nkpts, nkpts, nkpts, ngrids, cell.nao**2), dtype=dtype)
@@ -270,7 +281,7 @@ def _make_ao_eris_direct_fftdf(agf2, eris):
         adapted_ji = np.where(uinv == uid)[0]
         ki, kj = divmod(adapted_ji[0], nkpts)
 
-        fac = tools.get_coulG(cell, q, mesh=with_df.mesh)
+        fac = tools.get_coulG(cell, q, exx=exxdiv, mesh=with_df.mesh)
         fac *= (cell.vol / ngrids) / nkpts
         phase = np.exp(-1j * np.dot(coords, q))
 
@@ -299,6 +310,7 @@ def _make_ao_eris_direct_fftdf(agf2, eris):
 
 #TODO: I think gdf can have different naux at different k-points, but we just pad with zeros
 #TODO bra-ket symmetry? Must split 1/nkpts factor and sign (could be complex?)
+#TODO: not actually saving on unique k-points here!?
 def _make_ao_eris_direct_gdf(agf2, eris):
     ''' Get the 3c AO tensors for GDF '''
 
@@ -327,7 +339,7 @@ def _make_ao_eris_direct_gdf(agf2, eris):
             p1 = 0
             for qij_r, qij_i, sign in with_df.sr_loop(kpts[[ki,kj]], compact=False):
                 p0, p1 = p1, p1 + qij_r.shape[0] 
-                bra[ki,kj,p0:p1] = (qij_r - qij_i * 1j) / np.sqrt(nkpts)
+                bra[ki,kj,p0:p1] = (qij_r - qij_i * 1j) * np.sqrt(sign+0j) / np.sqrt(nkpts)
 
             for kk in range(nkpts):
                 kl = kconserv[ki,kj,kk]
@@ -335,7 +347,7 @@ def _make_ao_eris_direct_gdf(agf2, eris):
                 q1 = 0
                 for qkl_r, qkl_i, sign in with_df.sr_loop(kpts[[kk,kl]], compact=False):
                     q0, q1 = q1, q1 + qkl_r.shape[0]
-                    ket[ki,kj,kk,q0:q1] = (qkl_r + qkl_i * 1j) * sign / np.sqrt(nkpts)
+                    ket[ki,kj,kk,q0:q1] = (qkl_r + qkl_i * 1j) * np.sqrt(sign+0j) / np.sqrt(nkpts)
 
     mpi_helper.barrier()
     mpi_helper.allreduce_safe_inplace(bra)
