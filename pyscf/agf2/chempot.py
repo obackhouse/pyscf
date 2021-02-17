@@ -113,7 +113,11 @@ def binsearch_chempot(fock, nphys, nelec, occupancy=2):
         error = nelec - sum1
 
     lumo = homo+1
-    chempot = 0.5 * (w[homo] + w[lumo])
+
+    if lumo == len(w):
+        chempot = w[homo] + 1e-6
+    else:
+        chempot = 0.5 * (w[homo] + w[lumo])
 
     return chempot, error
 
