@@ -27,6 +27,7 @@ from pyscf import lib
 from pyscf.lib import logger
 from pyscf import __config__
 from pyscf import gto
+from pyscf.pbc import gto as pbc_gto
 from pyscf.lib import chkfile as chkutil
 from pyscf.pbc.lib import chkfile as pbc_chkutil
 from pyscf.agf2.aux import GreensFunction, SelfEnergy
@@ -83,7 +84,7 @@ def load_cell(chkfile):
 
     mpi_helper.barrier()
     dumps = mpi_helper.bcast_dict(dumps)
-    cell = gto.loads(dumps)
+    cell = pbc_gto.loads(dumps)
 
     return cell
 
