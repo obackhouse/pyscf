@@ -45,7 +45,7 @@ from pyscf.df import addons
 from pyscf.df.outcore import _guess_shell_ranges
 from pyscf.pbc.gto.cell import _estimate_rcut
 from pyscf.pbc import tools
-from pyscf.pbc.df import outcore
+from pyscf.pbc.df import incore
 from pyscf.pbc.df import ft_ao
 from pyscf.pbc.df import aft
 from pyscf.pbc.df import df_jk
@@ -147,22 +147,9 @@ def _make_j3c(mydf, cell, auxcell, kptij_lst, cderi_file):
     log = logger.Logger(mydf.stdout, mydf.verbose)
     max_memory = max(2000, mydf.max_memory-lib.current_memory()[0])
     fused_cell, fuse = fuse_auxcell(mydf, auxcell)
+    fswap = {}
 
-    # The ideal way to hold the temporary integrals is to store them in the
-    # cderi_file and overwrite them inplace in the second pass.  The current
-    # HDF5 library does not have an efficient way to manage free space in
-    # overwriting.  It often leads to the cderi_file ~2 times larger than the
-    # necessary size.  For now, dumping the DF integral intermediates to a
-    # separated temporary file can avoid this issue.  The DF intermediates may
-    # be terribly huge. The temporary file should be placed in the same disk
-    # as cderi_file.
-    swapfile = tempfile.NamedTemporaryFile(dir=os.path.dirname(cderi_file))
-    fswap = lib.H5TmpFile(swapfile.name)
-    # Unlink swapfile to avoid trash
-    swapfile = None
-
-    outcore._aux_e2(cell, fused_cell, fswap, 'int3c2e', aosym='s2',
-                    kptij_lst=kptij_lst, dataname='j3c-junk', max_memory=max_memory)
+    j3c_junk = incore.aux_e2(cell, fused_cell, 'int3c2e', aosym='s2', kptij_lst=kptij_lst)
     t1 = log.timer_debug1('3c2e', *t1)
 
     nao = cell.nao_nr()
@@ -235,9 +222,9 @@ def _make_j3c(mydf, cell, auxcell, kptij_lst, cderi_file):
             j2ctag = 'eig'
         return j2c, j2c_negative, j2ctag
 
-    feri = h5py.File(cderi_file, 'w')
+    feri = {}
     feri['j3c-kptij'] = kptij_lst
-    nsegs = len(fswap['j3c-junk/0'])
+    feri['j3c'] = numpy.zeros((len(kptij_lst), naux, nao*nao), dtype=complex)
     def make_kpt(uniq_kptji_id, cholesky_j2c):
         kpt = uniq_kpts[uniq_kptji_id]  # kpt = kptj - kpti
         log.debug1('kpt = %s', kpt)
@@ -287,8 +274,13 @@ def _make_j3c(mydf, cell, auxcell, kptij_lst, cderi_file):
             j3cR = []
             j3cI = []
             for k, idx in enumerate(adapted_ji_idx):
-                v = numpy.vstack([fswap['j3c-junk/%d/%d'%(idx,i)][0,col0:col1].T
-                                  for i in range(nsegs)])
+                if is_zero(kpt) and cell.dimension == 3:
+                    #TODO improve
+                    inds = numpy.tril_indices(nao)
+                    inds = [inds[0][i]*nao+inds[1][i] for i in range(col0, col1)]
+                    v = j3c_junk[idx,inds].T
+                else:
+                    v = j3c_junk[idx,col0:col1].T
                 # vbar is the interaction between the background charge
                 # and the auxiliary basis.  0D, 1D, 2D do not have vbar.
                 if is_zero(kpt) and cell.dimension == 3:
@@ -343,17 +335,19 @@ def _make_j3c(mydf, cell, auxcell, kptij_lst, cderi_file):
                     v = fuse(j3cR[k] + j3cI[k] * 1j)
                 if j2ctag == 'CD':
                     v = scipy.linalg.solve_triangular(j2c, v, lower=True, overwrite_b=True)
-                    feri['j3c/%d/%d'%(ji,istep)] = v
+                    if is_zero(kpt):
+                        v = lib.unpack_tril(v, axis=-1)
+                    feri['j3c'][ji] += v.reshape(-1, nao*nao)
                 else:
-                    feri['j3c/%d/%d'%(ji,istep)] = lib.dot(j2c, v)
+                    jv = lib.dot(j2c, v)
+                    if is_zero(kpt):
+                        jv = lib.unpack_tril(jv, axis=-1)
+                    feri['j3c'][ji] += jv.reshape(-1, nao*nao)
 
                 # low-dimension systems
                 if j2c_negative is not None:
-                    feri['j3c-/%d/%d'%(ji,istep)] = lib.dot(j2c_negative, v)
+                    raise NotImplementedError('incore gdf')
             j3cR = j3cI = None
-
-        for ji in adapted_ji_idx:
-            del(fswap['j3c-junk/%d'%ji])
 
     # Wrapped around boundary and symmetry between k and -k can be used
     # explicitly for the metric integrals.  We consider this symmetry
@@ -407,7 +401,7 @@ def _make_j3c(mydf, cell, auxcell, kptij_lst, cderi_file):
                 make_kpt(uniq_kptji_id, cholesky_j2c)
         done[uniq_kptji_ids] = True
 
-    feri.close()
+    return feri
 
 
 class GDF(aft.AFTDF):
@@ -573,9 +567,8 @@ class GDF(aft.AFTDF):
                     logger.warn(self, 'Value of ._cderi is ignored. '
                                 'DF integrals will be saved in file %s .',
                                 cderi)
-            self._cderi = cderi
             t1 = (time.clock(), time.time())
-            self._make_j3c(self.cell, self.auxcell, kptij_lst, cderi)
+            self._cderi = self._make_j3c(self.cell, self.auxcell, kptij_lst, cderi)
             t1 = logger.timer_debug1(self, 'j3c', *t1)
         return self
 
@@ -881,21 +874,24 @@ class _load3c(object):
         self.ignore_key_error = ignore_key_error
 
     def __enter__(self):
-        self.feri = h5py.File(self.cderi, 'r')
-        if self.label not in self.feri:
-            # Return a size-0 array to skip the loop in sr_loop
-            if self.ignore_key_error:
-                return numpy.zeros(0)
-            else:
-                raise KeyError('Key "%s" not found' % self.label)
+        feri = self.cderi[self.label]
+        k_id = member(self.kpti_kptj, self.cderi[self.kptij_label])
 
-        kpti_kptj = numpy.asarray(self.kpti_kptj)
-        kptij_lst = self.feri[self.kptij_label][()]
-        return _getitem(self.feri, self.label, kpti_kptj, kptij_lst,
-                        self.ignore_key_error)
+        if len(k_id) > 0:
+            dat = feri[k_id[0]]
+        else:
+            kptji = self.kpti_kptj[[1,0]]
+            k_id = member(kptji, self.cderi[self.kptij_label])
+            dat = feri[k_id[0]]
+
+        nao = int(numpy.sqrt(dat.shape[-1]))
+        v = lib.transpose(dat.reshape(-1,nao,nao), axes=(0,2,1)).conj()
+
+        return v
 
     def __exit__(self, type, value, traceback):
-        self.feri.close()
+        pass
+
 
 def _getitem(h5group, label, kpti_kptj, kptij_lst, ignore_key_error=False):
     k_id = member(kpti_kptj, kptij_lst)
