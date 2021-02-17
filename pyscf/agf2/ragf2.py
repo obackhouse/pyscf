@@ -396,11 +396,12 @@ def energy_2body(agf2, gf, se):
         e2b += lib.einsum('xk,yk,k->', vv, vv.conj(), 1./dlk)
 
     e2b *= 2
+    e2b = e2b.real
 
     mpi_helper.barrier()
     e2b = mpi_helper.allreduce(e2b)
 
-    return np.ravel(e2b.real)[0]
+    return np.ravel(e2b)[0]
 
 
 def energy_mp2(agf2, mo_energy, se):
@@ -428,8 +429,9 @@ def energy_mp2(agf2, mo_energy, se):
     dxk = lib.direct_sum('x,k->xk', mo_energy[occ], -se_vir.energy)
 
     emp2 = lib.einsum('xk,xk,xk->', vxk, vxk.conj(), 1./dxk)
+    emp2 = emp2.real
 
-    return np.ravel(emp2.real)[0]
+    return np.ravel(emp2)[0]
 
 
 class RAGF2(lib.StreamObject):
