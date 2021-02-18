@@ -336,12 +336,13 @@ def _make_j3c(mydf, cell, auxcell, kptij_lst, cderi_file):
                 if j2ctag == 'CD':
                     v = scipy.linalg.solve_triangular(j2c, v, lower=True, overwrite_b=True)
                     if is_zero(kpt):
+                        print(lib.finger(v))
                         v = lib.unpack_tril(v, axis=-1)
                     feri['j3c'][ji] += v.reshape(-1, nao*nao)
                 else:
-                    jv = lib.dot(j2c, v)
                     if is_zero(kpt):
                         jv = lib.unpack_tril(jv, axis=-1)
+                    jv = lib.dot(j2c, v)
                     feri['j3c'][ji] += jv.reshape(-1, nao*nao)
 
                 # low-dimension systems
@@ -760,6 +761,7 @@ class GDF(aft.AFTDF):
 
     def get_naoaux(self):
         '''The dimension of auxiliary basis at gamma point'''
+        raise NotImplementedError
 # determine naoaux with self._cderi, because DF object may be used as CD
 # object when self._cderi is provided.
         if self._cderi is None:
@@ -887,7 +889,7 @@ class _load3c(object):
         nao = int(numpy.sqrt(dat.shape[-1]))
         v = lib.transpose(dat.reshape(-1,nao,nao), axes=(0,2,1)).conj()
 
-        return v
+        return dat
 
     def __exit__(self, type, value, traceback):
         pass
