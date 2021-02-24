@@ -32,20 +32,25 @@ from pyscf import __config__
 
 LINEAR_DEP_THR = getattr(__config__, 'pbc_df_df_DF_lindep', 1e-9)
 LONGRANGE_AFT_TURNOVER_THRESHOLD = 2.5
+KPT_DIFF_TOL = getattr(__config__, 'pbc_lib_kpts_helper_kpt_diff_tol', 1e-6)
 
 from pyscf.pbc.df.df import make_modrho_basis, make_modchg_basis, GDF, fuse_auxcell
+
+
+def get_kpt_hash(kpt, tol=KPT_DIFF_TOL):
+    ''' 
+    Get a hashable representation of the k-point up to a given tol to
+    prevent the O(N_k) access cost.
+    '''
+    tol_and_more = KPT_DIFF_TOL * 0.1
+    kpt_round = numpy.asarray(kpt) / tol_and_more
+    return hash(tuple(kpt_round.ravel()))
 
 
 def _make_j3c(mydf, cell, auxcell, kptij_lst, cderi_file):
     t1 = (time.clock(), time.time())
     log = logger.Logger(mydf.stdout, mydf.verbose)
     fused_cell, fuse = fuse_auxcell(mydf, auxcell)
-
-    #NOTE: computing these for each k-point in the loop where they are needed is much less efficient
-    j3c_junk = incore.aux_e2(cell, fused_cell, 'int3c2e', aosym='s2', kptij_lst=kptij_lst)
-    if len(kptij_lst) == 1:
-        j3c_junk = numpy.asarray(j3c_junk)[None]
-    t1 = log.timer_debug1('3c2e', *t1)
 
     nao = cell.nao_nr()
     naux = auxcell.nao_nr()
@@ -62,6 +67,13 @@ def _make_j3c(mydf, cell, auxcell, kptij_lst, cderi_file):
 
     log.debug('Num uniq kpts %d', len(uniq_kpts))
     log.debug2('uniq_kpts %s', uniq_kpts)
+
+    #NOTE: computing these for each k-point in the loop where they are needed is much less efficient
+    j3c = incore.aux_e2(cell, fused_cell, 'int3c2e', aosym='s2', kptij_lst=kptij_lst)
+    if len(kptij_lst) == 1:
+        j3c = numpy.asarray(j3c)[None]
+    t1 = log.timer_debug1('3c2e', *t1)
+
     j2c = fused_cell.pbc_intor('int2c2e', hermi=1, kpts=uniq_kpts)
 
     for k, kpt in enumerate(uniq_kpts):
@@ -109,6 +121,10 @@ def _make_j3c(mydf, cell, auxcell, kptij_lst, cderi_file):
 
     feri = {}
     feri['j3c-kptij'] = kptij_lst
+    feri['j3c-kptij-hash'] = {}
+    for k, kpt in enumerate(kptij_lst):
+        val = get_kpt_hash(kpt)
+        feri['j3c-kptij-hash'][val] = feri['j3c-kptij-hash'].get(val, []) + [k,]
     feri['j3c'] = numpy.zeros((len(kptij_lst), naux, nao*nao), dtype=complex) 
 
     def make_kpt(uniq_kptji_id, cholesky_j2c):
@@ -148,7 +164,7 @@ def _make_j3c(mydf, cell, auxcell, kptij_lst, cderi_file):
                                    b, gxyz, Gvbase, kpt,
                                    adapted_kptjs, out=buf)
         for k, ji in enumerate(adapted_ji_idx):
-            v = j3c_junk[ji].T
+            v = j3c[ji].T
             if is_zero(kpt) and cell.dimension == 3:
                 for i in numpy.where(vbar != 0)[0]:
                     v[i] -= vbar[i] * ovlp[k]
@@ -316,7 +332,8 @@ class IncoreGDF(GDF):
         j3c = self._cderi['j3c']
         kpti_kptj = numpy.asarray(kpti_kptj)
         kptij = numpy.asarray(self._cderi['j3c-kptij'])
-        k_id = member(kpti_kptj, kptij) # O(nk), as in pyscf's original algo
+        #k_id = member(kpti_kptj, kptij) # O(nk), as in pyscf's original algo
+        k_id = self._cderi['j3c-kptij-hash'].get(get_kpt_hash(kpti_kptj), [])
 
         if len(k_id) > 0:
             v = j3c[k_id[0]]
