@@ -28,8 +28,8 @@ libagf2 = lib.load_library('libagf2')
 
 
 def build_mats_kragf2_incore(qija, qjia, ei, ej, ea, os_factor=1.0, ss_factor=1.0):
-    vv1, vev1 = _build_mats_kragf2_incore(qija, qjia, ei, ej, ea, os_factor, ss_factor)
-    return vv1, vev1
+    #vv1, vev1 = _build_mats_kragf2_incore(qija, qjia, ei, ej, ea, os_factor, ss_factor)
+    #return vv1, vev1
     ''' Wraps KAGF2ee_vv_vev_islice
     '''
 
