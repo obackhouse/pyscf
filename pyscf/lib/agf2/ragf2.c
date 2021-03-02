@@ -127,11 +127,11 @@ void AGF2slice_01i(double *a,
  *  d_xy = a + b_x - c_y
  */
 void AGF2sum_inplace_ener(double a,
-                  double *b,
-                  double *c,
-                  int x,
-                  int y,
-                  double *d)
+                          double *b,
+                          double *c,
+                          int x,
+                          int y,
+                          double *d)
 {
     double *pd;
     int i, j;

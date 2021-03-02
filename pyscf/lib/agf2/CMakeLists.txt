@@ -13,7 +13,7 @@
 # limitations under the License.
 
 add_library(agf2 SHARED
-  ragf2.c uagf2.c)
+  ragf2.c uagf2.c kragf2.c)
 
 set_target_properties(agf2 PROPERTIES
   LIBRARY_OUTPUT_DIRECTORY ${PROJECT_SOURCE_DIR}

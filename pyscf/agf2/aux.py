@@ -91,6 +91,18 @@ class AuxiliarySpace(object):
         coupling = np.copy(self.coupling[:,nocc:])
         return self.__class__(energy, coupling, chempot=self.chempot)
 
+    def split(self):
+        ''' Return a tuple (gf.get_occupied(), gf.get_virtual())
+        '''
+        nocc = np.searchsorted(self.energy, self.chempot)
+        e_occ, e_vir = np.copy(self.energy[:nocc]), \
+                       np.copy(self.energy[nocc:])
+        v_occ, v_vir = np.copy(self.coupling[:,:nocc]), \
+                       np.copy(self.coupling[:,nocc:])
+        occ = self.__class__(e_occ, v_occ, chempot=self.chempot)
+        vir = self.__class__(e_vir, v_vir, chempot=self.chempot)
+        return occ, vir
+
     def get_array(self, phys, out=None, chempot=0.0):
         ''' Expresses the auxiliaries as an array, i.e. the extended
             Fock matrix in AGF2 or Hamiltonian of ADC(2).

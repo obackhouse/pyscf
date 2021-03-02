@@ -22,9 +22,70 @@ import ctypes
 from pyscf import lib
 from pyscf.agf2 import mpi_helper
 
+libagf2 = lib.load_library('libagf2')
+
+#TODO can we just generalise the C code to work for both pbc and mol...?
+
 
 def build_mats_kragf2_incore(qija, qjia, ei, ej, ea, os_factor=1.0, ss_factor=1.0):
-    return _build_mats_kragf2_incore(qija, qjia, ei, ej, ea, os_factor=os_factor, ss_factor=ss_factor)
+    vv1, vev1 = _build_mats_kragf2_incore(qija, qjia, ei, ej, ea, os_factor, ss_factor)
+    return vv1, vev1
+    ''' Wraps KAGF2ee_vv_vev_islice
+    '''
+
+    fdrv = getattr(libagf2, 'KAGF2ee_vv_vev_islice')
+
+    assert qija.ndim == 4
+    assert qjia.ndim == 4
+    nmo = qija.shape[0]
+    ni = ei.size
+    nj = ej.size
+    na = ea.size
+    assert qija.shape == (nmo, ni, nj, na)
+    assert qjia.shape == (nmo, nj, ni, na)
+
+    qija = np.asarray(qija, order='C', dtype=np.complex128)
+    qjia = np.asarray(qjia, order='C', dtype=np.complex128)
+    e_i = np.asarray(ei, order='C')
+    e_j = np.asarray(ej, order='C')
+    e_a = np.asarray(ea, order='C')
+
+    vv = np.zeros((nmo*nmo), dtype=np.complex128)
+    vev = np.zeros((nmo*nmo), dtype=np.complex128)
+
+    rank, size = mpi_helper.rank, mpi_helper.size
+    istart = rank * ni // size
+    iend = ni if rank == (size-1) else (rank+1) * ni // size
+
+    fdrv(qija.ctypes.data_as(ctypes.c_void_p),
+         qjia.ctypes.data_as(ctypes.c_void_p),
+         e_i.ctypes.data_as(ctypes.c_void_p),
+         e_j.ctypes.data_as(ctypes.c_void_p),
+         e_a.ctypes.data_as(ctypes.c_void_p),
+         ctypes.c_double(os_factor),
+         ctypes.c_double(ss_factor),
+         ctypes.c_int(nmo),
+         ctypes.c_int(ni),
+         ctypes.c_int(nj),
+         ctypes.c_int(na),
+         ctypes.c_int(istart),
+         ctypes.c_int(iend),
+         vv.ctypes.data_as(ctypes.c_void_p),
+         vev.ctypes.data_as(ctypes.c_void_p),
+    )
+
+    vv = vv.reshape(nmo, nmo)
+    vev = vev.reshape(nmo, nmo)
+
+    mpi_helper.barrier()
+    mpi_helper.allreduce_safe_inplace(vv)
+    mpi_helper.allreduce_safe_inplace(vev)
+
+    #print(['%.5e' % x for x in (np.max(np.absolute(vv1.real-vv.real)), np.max(np.absolute(vv1.imag-vv.imag)), np.max(np.absolute(vv1.real-vv.real)), np.max(np.absolute(vv1.imag-vv.imag)))])
+    #print('%.10e %.10e' % (np.max(np.absolute(vev1.real-vev.real)), np.max(np.absolute(vev1.imag-vev.imag))))
+    #print(np.all(vv1 == vv), np.all(vev1 == vev))
+
+    return vv, vev
 
 
 def build_mats_kragf2_direct(qxi, qja, qxj, qia, ei, ej, ea, os_factor=1.0, ss_factor=1.0):
@@ -52,7 +113,7 @@ def _build_mats_kragf2_incore(qija, qjia, ei, ej, ea, os_factor=1.0, ss_factor=1
 
         vv = lib.dot(xija, xjia.T.conj(), beta=1, c=vv)
 
-        eija = eja + ei[i]
+        eija = ei[i] + eja
         exija = xija * eija[None]
 
         vev = lib.dot(exija, xjia.T.conj(), beta=1, c=vev)

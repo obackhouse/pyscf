@@ -176,6 +176,11 @@ def build_se_part(agf2, eri, gf_occ, gf_vir, os_factor=1.0, ss_factor=1.0):
     if isinstance(eri.eri, (tuple, list)):
         naux = eri.naux
 
+        #FIXME: this probably isn't true...
+        # constraining kj via conservation instead of ka means that we
+        # don't have to do any padding tricks, as kx,ki,ka are all in
+        # independent spaces
+        #FIXME the sizes can still be different i think :(
         for kxia in mpi_helper.nrange(nkpts**3):
             kxi, ka = divmod(kxia, nkpts)
             kx, ki = divmod(kxi, nkpts)
@@ -216,7 +221,10 @@ def build_se_part(agf2, eri, gf_occ, gf_vir, os_factor=1.0, ss_factor=1.0):
 
     se = []
     for kx in range(nkpts):
-        e, c = _agf2.cholesky_build(vv[kx], vev[kx])
+        #TODO remove checks
+        assert np.allclose(vv[kx], vv[kx].T.conj())
+        assert np.allclose(vev[kx], vev[kx].T.conj())
+        e, c = _agf2.cholesky_build(vv[kx], vev[kx], do_twice=True)
         se_kx = aux.SelfEnergy(e, c, chempot=gf_occ[kx].chempot)
         se_kx.remove_uncoupled(tol=tol)
         se.append(se_kx)
@@ -1209,9 +1217,10 @@ if __name__ == '__main__':
 
     rhf = pyscf_cache.KRHF(cell)
     #rhf.with_df = pyscf_cache.MDF(cell)
-    rhf.with_df = df.FFTDF(cell)
-    rhf.exxdiv = 'ewald'
-    rhf.kpts = cell.make_kpts([1,1,2])
+    rhf.kpts = cell.make_kpts([2,1,1])
+    rhf.with_df = df.GDF(cell, rhf.kpts)
+    rhf.with_df.build()
+    rhf.exxdiv = None
 
     rhf.run()
 
@@ -1225,7 +1234,7 @@ if __name__ == '__main__':
     #gf2a.run()
 
     gf2b = KRAGF2(rhf)
-    gf2b.direct = True
+    gf2b.direct = False
     gf2b.conv_tol = 1e-5
     gf2b.max_cycle = 20
     gf2b.keep_exxdiv = False
