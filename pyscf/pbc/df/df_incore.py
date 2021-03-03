@@ -130,6 +130,7 @@ def _get_j2c(
         LkI = numpy.asarray(aoaux.imag, order='C')
         aoaux = None
 
+        # eq. 31 final three terms:
         if is_zero(kpt):  # kpti == kptj
             j2c[k][naux:] = int2c2e[k][naux:] - (
                                 lib.ddot(LkR[naux:]*coulG, LkR.T) +
@@ -236,6 +237,8 @@ def _get_j3c(mydf,
 
         for k, ji in enumerate(adapted_ji_idx):
             v = int3c2e[ji]
+
+            # eq. 31 second term:
             if is_zero(kpt): # and cell.dimension == 3:
                 for i in numpy.where(vbar != 0)[0]:
                     v[i] -= vbar[i] * ovlp[k]
@@ -253,6 +256,7 @@ def _get_j3c(mydf,
             pqkR[:] = aoao.real.T
             pqkI[:] = aoao.imag.T
 
+            # eq. 31 final term:
             lib.dot(kLR.T, pqkR.T, -1, j3cR[naux:], 1)
             lib.dot(kLI.T, pqkI.T, -1, j3cR[naux:], 1)
             if not (is_zero(kpt) and gamma_point(adapted_kptjs[k])):
