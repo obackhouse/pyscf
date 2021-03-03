@@ -4,12 +4,7 @@ Incore density fitting
 
 import os
 import time
-import copy
-import ctypes
-import warnings
-import tempfile
 import numpy
-import h5py
 import scipy.linalg
 from pyscf import lib
 from pyscf import gto
@@ -17,8 +12,7 @@ from pyscf.lib import logger
 from pyscf.df import addons
 from pyscf.agf2 import mpi_helper
 from pyscf.ao2mo.outcore import balance_partition
-from pyscf.pbc.df import incore
-from pyscf.pbc.df import ft_ao
+from pyscf.pbc.df import incore, ft_ao
 from pyscf.pbc.df.df_jk import zdotCN
 from pyscf.pbc.lib.kpts_helper import is_zero, gamma_point, member, unique, KPT_DIFF_TOL
 from pyscf import __config__
