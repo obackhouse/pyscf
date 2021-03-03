@@ -17,29 +17,17 @@ from pyscf.lib import logger
 from pyscf.df import addons
 from pyscf.agf2 import mpi_helper
 from pyscf.ao2mo.outcore import balance_partition
-from pyscf.pbc.gto.cell import _estimate_rcut
-from pyscf.pbc import tools
 from pyscf.pbc.df import incore
 from pyscf.pbc.df import ft_ao
-from pyscf.pbc.df import aft
-from pyscf.pbc.df import df_jk
-from pyscf.pbc.df import df_ao2mo
-from pyscf.pbc.df.aft import estimate_eta, get_nuc
 from pyscf.pbc.df.df_jk import zdotCN
-from pyscf.pbc.lib.kpts_helper import (is_zero, gamma_point, member, unique,
-                                       KPT_DIFF_TOL)
-from pyscf.pbc.df.aft import _sub_df_jk_
+from pyscf.pbc.lib.kpts_helper import is_zero, gamma_point, member, unique, KPT_DIFF_TOL
 from pyscf import __config__
 
-LINEAR_DEP_THR = getattr(__config__, 'pbc_df_df_DF_lindep', 1e-9)
-LONGRANGE_AFT_TURNOVER_THRESHOLD = 2.5
-KPT_DIFF_TOL = getattr(__config__, 'pbc_lib_kpts_helper_kpt_diff_tol', 1e-6)
-
-from pyscf.pbc.df.df import make_modrho_basis, make_modchg_basis, GDF, fuse_auxcell
+from pyscf.pbc.df.df import make_modrho_basis, GDF, fuse_auxcell
 
 
 def get_kpt_hash(kpt, tol=KPT_DIFF_TOL):
-    ''' 
+    '''
     Get a hashable representation of the k-point up to a given tol to
     prevent the O(N_k) access cost.
     '''
@@ -143,7 +131,7 @@ def _make_j3c(mydf, cell, auxcell, kptij_lst, cderi_file):
     for k, kpt in enumerate(kptij_lst):
         val = get_kpt_hash(kpt)
         feri['j3c-kptij-hash'][val] = feri['j3c-kptij-hash'].get(val, []) + [k,]
-    feri['j3c'] = numpy.zeros((len(kptij_lst), naux, nao*nao), dtype=complex) 
+    feri['j3c'] = numpy.zeros((len(kptij_lst), naux, nao*nao), dtype=complex)
 
     def make_kpt(uniq_kptji_id, cholesky_j2c):
         kpt = uniq_kpts[uniq_kptji_id]  # kpt = kptj - kpti
@@ -312,7 +300,7 @@ class IncoreGDF(GDF):
         return self
 
     _make_j3c = _make_j3c
-    
+
     def sr_loop(self, kpti_kptj=numpy.zeros((2,3)), max_memory=2000,
                 compact=True, blksize=None):
         '''Short range part'''
@@ -328,7 +316,7 @@ class IncoreGDF(GDF):
 
         j3c = self._cderi['j3c']
         kpti_kptj = numpy.asarray(kpti_kptj)
-        kptij = numpy.asarray(self._cderi['j3c-kptij'])
+        #kptij = numpy.asarray(self._cderi['j3c-kptij'])
         #k_id = member(kpti_kptj, kptij) # O(nk), as in pyscf's original algo
         k_id = self._cderi['j3c-kptij-hash'].get(get_kpt_hash(kpti_kptj), [])
 
