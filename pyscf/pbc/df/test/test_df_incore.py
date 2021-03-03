@@ -112,6 +112,7 @@ class KnownValues(unittest.TestCase):
     def test_get_eri_0123(self):
         eri0123 = kmdf.get_eri(kpts[:4])
         eri0123_ref = kmdf.get_eri(kpts[:4])
+        self.assertTrue(numpy.allclose(eri0123, eri0123_ref, atol=1e-7))
 
 
 
