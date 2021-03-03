@@ -212,10 +212,10 @@ def _make_j3c(mydf, cell, auxcell, kptij_lst, cderi_file):
                 v = fuse(j3cR + j3cI * 1j)
             if j2ctag == 'CD':
                 v = scipy.linalg.solve_triangular(j2c, v, lower=True, overwrite_b=True)
-                feri['j3c'][ji] += v.reshape(-1, nao_pair)
+                feri['j3c'][ji,:v.shape[0]] += v.reshape(-1, nao_pair)
             else:
                 v = lib.dot(j2c, v)
-                feri['j3c'][ji] += v.reshape(-1, nao_pair)
+                feri['j3c'][ji,:v.shape[0]] += v.reshape(-1, nao_pair)
 
             # low-dimension systems
             if j2c_negative is not None:
