@@ -1,5 +1,8 @@
 '''
 Incore density fitting
+
+Ref:
+J. Chem. Phys. 147, 164119 (2017)
 '''
 
 import os
@@ -13,65 +16,85 @@ from pyscf.ao2mo.outcore import balance_partition
 from pyscf.pbc.df import incore, ft_ao
 from pyscf.pbc.df.df_jk import zdotCN
 from pyscf.pbc.lib.kpts_helper import is_zero, gamma_point, member, unique, KPT_DIFF_TOL
-
 from pyscf.pbc.df.df import make_modrho_basis, GDF, fuse_auxcell
 
 
-def get_kpt_hash(kpt, tol=KPT_DIFF_TOL):
+def _get_kpt_hash(kpt, tol=KPT_DIFF_TOL):
     '''
     Get a hashable representation of the k-point up to a given tol to
     prevent the O(N_k) access cost.
     '''
+
     kpt_round = numpy.rint(numpy.asarray(kpt) / tol)
     return hash(tuple(kpt_round.ravel()))
 
 
-def _make_j3c(mydf, cell, auxcell, kptij_lst, cderi_file):
+def _get_2c2e(fused_cell, uniq_kpts, log):
+    '''
+    Get the bare two-center two-electron interaction, first term
+    of Eq. 32.
+    '''
+
+    int2c2e = fused_cell.pbc_intor('int2c2e', hermi=1, kpts=uniq_kpts)
+
+    return int2c2e
+
+
+def _get_3c2e(cell, fused_cell, kptij_lst, log):
+    '''
+    Get the bare three-center two-electron interaction, first term
+    of Eq. 31.
+    '''
+
     t1 = (time.clock(), time.time())
-    log = logger.Logger(mydf.stdout, mydf.verbose)
-    fused_cell, fuse = fuse_auxcell(mydf, auxcell)
 
+    nkij = len(kptij_lst)
     nao = cell.nao_nr()
-    naux = auxcell.nao_nr()
-    mesh = mydf.mesh
-    Gv, Gvbase, kws = cell.get_Gv_weights(mesh)
-    b = cell.reciprocal_vectors()
-    gxyz = lib.cartesian_prod([numpy.arange(len(x)) for x in Gvbase])
-    ngrids = gxyz.shape[0]
+    ngrids = fused_cell.nao_nr()
+    aux_loc = fused_cell.ao_loc_nr(fused_cell.cart)
 
-    kptis = kptij_lst[:,0]
-    kptjs = kptij_lst[:,1]
-    kpt_ji = kptjs - kptis
-    uniq_kpts, uniq_index, uniq_inverse = unique(kpt_ji)
+    int3c2e = numpy.zeros((nkij, ngrids, nao*nao), dtype=numpy.complex128)
 
-    log.debug('Num uniq kpts %d', len(uniq_kpts))
-    log.debug2('uniq_kpts %s', uniq_kpts)
-
-    j3c = numpy.zeros((len(kptij_lst), fused_cell.nao_nr(), nao*nao),
-                      dtype=numpy.complex128)
     for p0, p1 in mpi_helper.prange(0, fused_cell.nbas, fused_cell.nbas):
+        log.debug2('3c2e part [%d -> %d] of %d' % (p0, p1, fused_cell.nbas))
+
         shls_slice = (0, cell.nbas, 0, cell.nbas, p0, p1)
-        aux_loc = fused_cell.ao_loc_nr(fused_cell.cart)[:shls_slice[5]+1]
-        q0, q1 = aux_loc[shls_slice[4]], aux_loc[shls_slice[5]]
+        q0, q1 = aux_loc[p0], aux_loc[p1]
 
-        #NOTE dominant call:
-        j3c_part = incore.aux_e2(cell, fused_cell, 'int3c2e', aosym='s2',
+        int3c2e_part = incore.aux_e2(cell, fused_cell, 'int3c2e', aosym='s2',
                                  kptij_lst=kptij_lst, shls_slice=shls_slice)
-        j3c_part = lib.transpose(j3c_part, axes=(0,2,1))
+        int3c2e_part = lib.transpose(int3c2e_part, axes=(0,2,1))
 
-        if j3c_part.shape[-1] != nao*nao:
-            assert j3c_part.shape[-1] == nao*(nao+1)//2
-            j3c_part = lib.unpack_tril(j3c_part, lib.HERMITIAN, axis=-1)
+        if int3c2e_part.shape[-1] != nao*nao:
+            assert int3c2e_part.shape[-1] == nao*(nao+1)//2
+            int3c2e_part = lib.unpack_tril(int3c2e_part, lib.HERMITIAN, axis=-1)
 
-        j3c_part = j3c_part.reshape((len(kptij_lst), q1-q0, nao*nao))
-        j3c[:,q0:q1] = j3c_part
+        int3c2e_part = int3c2e_part.reshape((nkij, q1-q0, nao*nao))
+        int3c2e[:,q0:q1] = int3c2e_part
 
-    mpi_helper.allreduce_safe_inplace(j3c)
+        log.timer_debug1('3c2e part', *t1)
+
+    mpi_helper.allreduce_safe_inplace(int3c2e)
     mpi_helper.barrier()
 
-    t1 = log.timer_debug1('3c2e', *t1)
+    return int3c2e
 
-    j2c = fused_cell.pbc_intor('int2c2e', hermi=1, kpts=uniq_kpts)
+
+def _get_j2c(mydf, cell, auxcell, fused_cell, fuse, int2c2e, uniq_kpts, log):
+    '''
+    Build j2c using the 2c2e interaction, int2c2e, Eq. 32.
+
+    Note that int2c2e input variable is changed in-place.
+    '''
+
+    naux = auxcell.nao_nr()
+    mesh = mydf.mesh
+    #FIXME: calculated twice... inexpensive?
+    Gv, Gvbase, kws = cell.get_Gv_weights(mesh)
+    gxyz = lib.cartesian_prod([numpy.arange(len(x)) for x in Gvbase])
+    b = cell.reciprocal_vectors()
+
+    j2c = int2c2e
 
     for k, kpt in enumerate(uniq_kpts):
         coulG = mydf.weighted_coulG(kpt, False, mesh)
@@ -94,35 +117,79 @@ def _make_j3c(mydf, cell, auxcell, kptij_lst, cderi_file):
         coulG = None
         j2c[k] = fuse(fuse(j2c[k]).T).T
 
-    def cholesky_decomposed_metric(uniq_kptji_id):
-        j2c_kpt = j2c[uniq_kptji_id]
-        j2c_negative = None
-        try:
-            j2c_kpt = scipy.linalg.cholesky(j2c_kpt, lower=True)
-            j2ctag = 'CD'
-        except scipy.linalg.LinAlgError:
-            w, v = scipy.linalg.eigh(j2c_kpt)
-            log.debug('DF metric linear dependency for kpt %s', uniq_kptji_id)
-            log.debug('cond = %.4g, drop %d bfns',
-                      w[-1]/w[0], numpy.count_nonzero(w<mydf.linear_dep_threshold))
-            v1 = v[:,w>mydf.linear_dep_threshold].conj().T
-            v1 /= numpy.sqrt(w[w>mydf.linear_dep_threshold]).reshape(-1,1)
-            j2c_kpt = v1
-            if cell.dimension == 2 and cell.low_dim_ft_type != 'inf_vacuum':
-                idx = numpy.where(w < -mydf.linear_dep_threshold)[0]
-                if len(idx) > 0:
-                    j2c_negative = (v[:,idx]/numpy.sqrt(-w[idx])).conj().T
-            w = v = None
-            j2ctag = 'eig'
-        return j2c_kpt, j2c_negative, j2ctag
+    return j2c 
 
-    feri = {}
-    feri['j3c-kptij'] = kptij_lst
-    feri['j3c-kptij-hash'] = {}
+
+def _cholesky_decomposed_metric(mydf, cell, j2c, uniq_kptji_id, log):
+    '''
+    Get the Cholesky decomposed j2c.
+    '''
+
+    j2c_kpt = j2c[uniq_kptji_id]
+
+    try:
+        j2c_kpt = scipy.linalg.cholesky(j2c_kpt, lower=True)
+        j2ctag = 'CD'
+    except scipy.linalg.LinAlgError:
+        w, v = scipy.linalg.eigh(j2c_kpt)
+        log.debug('DF metric linear dependency for kpt %s', uniq_kptji_id)
+        log.debug('cond = %.4g, drop %d bfns',
+                  w[-1]/w[0], numpy.count_nonzero(w<mydf.linear_dep_threshold))
+        v1 = v[:,w>mydf.linear_dep_threshold].conj().T
+        v1 /= numpy.sqrt(w[w>mydf.linear_dep_threshold]).reshape(-1,1)
+        j2c_kpt = v1
+        w = v = None
+        j2ctag = 'eig'
+
+    return j2c_kpt, j2ctag
+
+
+def _make_j3c(mydf, cell, auxcell, kptij_lst, cderi_file):
+    t1 = (time.clock(), time.time())
+    log = logger.Logger(mydf.stdout, mydf.verbose)
+    fused_cell, fuse = fuse_auxcell(mydf, auxcell)
+
+    if cell.dimension < 3:
+        raise ValueError('IncoreGDF does not support low-dimension cells')
+
+    nao = cell.nao_nr()
+    naux = auxcell.nao_nr()
+    mesh = mydf.mesh
+    Gv, Gvbase, kws = cell.get_Gv_weights(mesh)
+    b = cell.reciprocal_vectors()
+    gxyz = lib.cartesian_prod([numpy.arange(len(x)) for x in Gvbase])
+    ngrids = gxyz.shape[0]
+
+    kptis = kptij_lst[:,0]
+    kptjs = kptij_lst[:,1]
+    kpt_ji = kptjs - kptis
+    uniq_kpts, uniq_index, uniq_inverse = unique(kpt_ji)
+
+    log.debug('Num uniq kpts %d', len(uniq_kpts))
+    log.debug2('uniq_kpts %s', uniq_kpts)
+
+    # Get the 3c2e interaction:
+    int3c2e = _get_3c2e(cell, fused_cell, kptij_lst, log)
+    t1 = log.timer_debug1('3c2e', *t1)
+
+    # Get the 2c2e interaction:
+    int2c2e = _get_2c2e(fused_cell, uniq_kpts, log)
+    t1 = log.timer_debug1('2c2e', *t1)
+
+    # Get j2c:
+    j2c = _get_j2c(mydf, cell, auxcell, fused_cell, fuse, int2c2e, uniq_kpts, log)
+    t1 = log.timer_debug1('j2c', *t1)
+
+    feri = {
+        'j3c-kptij': kptij_lst,
+        'j3c-kptij-hash': {},
+        'j3c': numpy.zeros((len(kptij_lst), naux, nao*nao), dtype=numpy.complex128),
+    }
+
     for k, kpt in enumerate(kptij_lst):
-        val = get_kpt_hash(kpt)
+        val = _get_kpt_hash(kpt)
         feri['j3c-kptij-hash'][val] = feri['j3c-kptij-hash'].get(val, []) + [k,]
-    feri['j3c'] = numpy.zeros((len(kptij_lst), naux, nao*nao), dtype=complex)
+
 
     def make_kpt(uniq_kptji_id, cholesky_j2c):
         kpt = uniq_kpts[uniq_kptji_id]  # kpt = kptj - kpti
@@ -132,7 +199,7 @@ def _make_j3c(mydf, cell, auxcell, kptij_lst, cderi_file):
         nkptj = len(adapted_kptjs)
         log.debug1('adapted_ji_idx = %s', adapted_ji_idx)
 
-        j2c, j2c_negative, j2ctag = cholesky_j2c
+        j2c, j2ctag = cholesky_j2c
 
         shls_slice = (auxcell.nbas, fused_cell.nbas)
         Gaux = ft_ao.ft_ao(fused_cell, Gv, shls_slice, b, gxyz, Gvbase, kpt)
@@ -162,7 +229,7 @@ def _make_j3c(mydf, cell, auxcell, kptij_lst, cderi_file):
                                    b, gxyz, Gvbase, kpt,
                                    adapted_kptjs, out=buf)
         for k, ji in enumerate(adapted_ji_idx):
-            v = j3c[ji]
+            v = int3c2e[ji]
             if is_zero(kpt) and cell.dimension == 3:
                 for i in numpy.where(vbar != 0)[0]:
                     v[i] -= vbar[i] * ovlp[k]
@@ -195,18 +262,7 @@ def _make_j3c(mydf, cell, auxcell, kptij_lst, cderi_file):
             else:
                 v = lib.dot(j2c, v)
                 feri['j3c'][ji,:v.shape[0]] += v.reshape(-1, nao_pair)
-
-            # low-dimension systems
-            if j2c_negative is not None:
-                raise NotImplementedError('incore gdf low dimension')
         j3cR = j3cI = None
-
-    def conj_j2c(cholesky_j2c):
-        j2c, j2c_negative, j2ctag = cholesky_j2c
-        if j2c_negative is None:
-            return j2c.conj(), None, j2ctag
-        else:
-            return j2c.conj(), j2c_negative.conj(), j2ctag
 
     a = cell.lattice_vectors() / (2*numpy.pi)
     def kconserve_indices(kpt):
@@ -222,7 +278,7 @@ def _make_j3c(mydf, cell, auxcell, kptij_lst, cderi_file):
         uniq_kptji_id = kconserve_indices(-kpt)[0] # ensure k/-k symmetry in j2c dims
 
         log.debug1('Cholesky decomposition for j2c at kpt %s', k)
-        cholesky_j2c = cholesky_decomposed_metric(uniq_kptji_id)
+        cholesky_j2c = _cholesky_decomposed_metric(mydf, cell, j2c, uniq_kptji_id, log)
 
         log.debug1("make_kpt for kpt %s", k)
         make_kpt(k, cholesky_j2c)
@@ -234,6 +290,9 @@ def _make_j3c(mydf, cell, auxcell, kptij_lst, cderi_file):
 
 
 class IncoreGDF(GDF):
+    ''' Incore Gaussian density fitting
+    '''
+
     def build(self, j_only=None, with_j3c=True, kpts_band=None):
         if self.kpts_band is not None:
             self.kpts_band = numpy.reshape(self.kpts_band, (-1,3))
@@ -272,6 +331,7 @@ class IncoreGDF(GDF):
             kptij_lst = numpy.asarray(kptij_lst)
 
         if with_j3c:
+            #TODO what to do with this? allow pickling?
             if isinstance(self._cderi_to_save, str):
                 cderi = self._cderi_to_save
             else:
@@ -288,9 +348,12 @@ class IncoreGDF(GDF):
             t1 = (time.clock(), time.time())
             self._cderi = self._make_j3c(self.cell, self.auxcell, kptij_lst, cderi)
             t1 = logger.timer_debug1(self, 'j3c', *t1)
+
         return self
 
+
     _make_j3c = _make_j3c
+
 
     def sr_loop(self, kpti_kptj=numpy.zeros((2,3)), max_memory=2000,
                 compact=True, blksize=None):
@@ -307,16 +370,17 @@ class IncoreGDF(GDF):
 
         j3c = self._cderi['j3c']
         kpti_kptj = numpy.asarray(kpti_kptj)
-        #kptij = numpy.asarray(self._cderi['j3c-kptij'])
-        #k_id = member(kpti_kptj, kptij) # O(nk), as in pyscf's original algo
-        k_id = self._cderi['j3c-kptij-hash'].get(get_kpt_hash(kpti_kptj), [])
+        k_id = self._cderi['j3c-kptij-hash'].get(_get_kpt_hash(kpti_kptj), [])
 
         if len(k_id) > 0:
             v = j3c[k_id[0]].copy()
         else:
             kptji = kpti_kptj[[1,0]]
-            #k_id = member(kptji, kptij) # O(nk), as in pyscf's original algo
-            k_id = self._cderi['j3c-kptij-hash'].get(get_kpt_hash(kptji), [])
+            k_id = self._cderi['j3c-kptij-hash'].get(_get_kpt_hash(kptji), [])
+            if len(k_id) == 0:
+                raise RuntimeError('%s for kpts %s is not initialized.\n'
+                                   'You need to update the attribute .kpts '
+                                   'then call .build().' % (label, kpti_kptj))
             v = j3c[k_id[0]]
 
             shape = v.shape
@@ -347,6 +411,7 @@ class IncoreGDF(GDF):
         if self._cderi is None:
             self.build()
         return self._cderi['j3c'].shape[1]
+
 
 DF = GDF
 IncoreDF = IncoreGDF
