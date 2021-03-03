@@ -370,8 +370,15 @@ def init_guess_by_minao(mol):
         occ = numpy.hstack(occ)
 
         if nelec_ecp > 0:
+            if symb in mol._basis:
+                input_basis = mol._basis[symb]
+            elif stdsymb in mol._basis:
+                input_basis = mol._basis[stdsymb]
+            else:
+                raise KeyError(symb)
+
             basis4ecp = [[] for i in range(4)]
-            for bas in mol._basis[symb]:
+            for bas in input_basis:
                 l = bas[0]
                 if l < 4:
                     basis4ecp[l].append(bas)
@@ -1098,8 +1105,7 @@ def mulliken_meta(mol, dm, verbose=logger.DEBUG,
     if s is None: s = get_ovlp(mol)
     log = logger.new_logger(mol, verbose)
 
-    c = orth.restore_ao_character(mol, pre_orth_method)
-    orth_coeff = orth.orth_ao(mol, 'meta_lowdin', pre_orth_ao=c, s=s)
+    orth_coeff = orth.orth_ao(mol, 'meta_lowdin', pre_orth_method, s=s)
     c_inv = numpy.dot(orth_coeff.conj().T, s)
     if isinstance(dm, numpy.ndarray) and dm.ndim == 2:
         dm = reduce(numpy.dot, (c_inv, dm, c_inv.T.conj()))
@@ -1666,10 +1672,13 @@ class SCF(lib.StreamObject):
 
     def init_direct_scf(self, mol=None):
         if mol is None: mol = self.mol
-        opt = _vhf.VHFOpt(mol, 'int2e', 'CVHFnrs8_prescreen',
-                          'CVHFsetnr_direct_scf',
-                          'CVHFsetnr_direct_scf_dm')
-        opt.direct_scf_tol = self.direct_scf_tol
+        # Integrals < direct_scf_tol may be set to 0 in int2e.
+        # Higher accuracy is required for Schwartz inequality prescreening.
+        with mol.with_integral_screen(self.direct_scf_tol**2):
+            opt = _vhf.VHFOpt(mol, 'int2e', 'CVHFnrs8_prescreen',
+                              'CVHFsetnr_direct_scf',
+                              'CVHFsetnr_direct_scf_dm')
+            opt.direct_scf_tol = self.direct_scf_tol
         return opt
 
     @lib.with_doc(get_jk.__doc__)
