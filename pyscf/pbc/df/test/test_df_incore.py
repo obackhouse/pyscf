@@ -82,7 +82,6 @@ class KnownValues(unittest.TestCase):
         self.assertTrue(numpy.allclose(eri1111, eri1111_ref, atol=1e-7))
         numpy.savetxt('4444.dat', eri4444)
         numpy.savetxt('4444ref.dat', eri4444_ref)
-        print(numpy.max(numpy.absolute(eri4444-eri4444_ref)))
         self.assertTrue(numpy.allclose(eri4444, eri4444_ref, atol=1e-7))
 
     def test_get_eri_1111(self):
@@ -92,14 +91,12 @@ class KnownValues(unittest.TestCase):
         check2_ref = kmdf_ref.get_eri((kpts[1]+5e-8,kpts[1]+5e-8,kpts[1],kpts[1]))
         self.assertTrue(numpy.allclose(eri1111, check2, atol=1e-7))
         self.assertTrue(numpy.allclose(eri1111_ref, check2_ref, atol=1e-7))
-        print(numpy.max(numpy.absolute(eri1111-eri1111_ref)))
         self.assertTrue(numpy.allclose(eri1111, eri1111_ref, atol=1e-7))
         self.assertTrue(numpy.allclose(check2, check2_ref, atol=1e-7))
 
     def test_get_eri_0011(self):
         eri0011 = kmdf.get_eri((kpts[0],kpts[0],kpts[1],kpts[1]))
         eri0011_ref = kmdf_ref.get_eri((kpts[0],kpts[0],kpts[1],kpts[1]))
-        print(numpy.max(numpy.absolute(eri0011-eri0011_ref)))
         self.assertTrue(numpy.allclose(eri0011, eri0011_ref, atol=1e-7))
 
     def test_get_eri_0110(self):
