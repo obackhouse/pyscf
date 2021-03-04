@@ -53,10 +53,6 @@ def build_mats_kragf2_incore(qija, qjia, ei, ej, ea, os_factor=1.0, ss_factor=1.
     vv = np.zeros((nmo*nmo), dtype=np.complex128)
     vev = np.zeros((nmo*nmo), dtype=np.complex128)
 
-    rank, size = mpi_helper.rank, mpi_helper.size
-    istart = rank * ni // size
-    iend = ni if rank == (size-1) else (rank+1) * ni // size
-
     fdrv(qija.ctypes.data_as(ctypes.c_void_p),
          qjia.ctypes.data_as(ctypes.c_void_p),
          e_i.ctypes.data_as(ctypes.c_void_p),
@@ -68,8 +64,8 @@ def build_mats_kragf2_incore(qija, qjia, ei, ej, ea, os_factor=1.0, ss_factor=1.
          ctypes.c_int(ni),
          ctypes.c_int(nj),
          ctypes.c_int(na),
-         ctypes.c_int(istart),
-         ctypes.c_int(iend),
+         ctypes.c_int(0),
+         ctypes.c_int(ni),
          vv.ctypes.data_as(ctypes.c_void_p),
          vev.ctypes.data_as(ctypes.c_void_p),
     )
