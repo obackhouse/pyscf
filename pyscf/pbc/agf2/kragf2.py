@@ -39,6 +39,7 @@ from pyscf.pbc.mp.kmp2 import get_nocc, get_nmo, get_frozen_mask
 #TODO: change agf2 object to gf2 and molecular code
 #TODO: fix molecular code DIIS to use the Aux.moment function
 #TODO: should we track convergence via etot?
+#TODO: re-tests direct stuff - had to change conj
 
 #NOTE: agf2.nmo is .max()'d, must all be the same, whilst agf2.nocc is per-kpoint and can be different
 
@@ -280,7 +281,7 @@ def get_jk_direct(agf2, eri, rdm1, with_j=True, with_k=True, madelung=None):
             kj = ki
             kl = agf2.khelper.kconserv[ki,kj,kk]
             buf = np.dot(qkl[ki,kj,kk], rdm1[kl].ravel(), out=buf)
-            vj[ki] += np.dot(qij[ki,kj].T.conj(), buf)
+            vj[ki] += np.dot(qij[ki,kj].T, buf)
 
         vj = vj.reshape(nkpts, nmo, nmo)
 
@@ -295,7 +296,7 @@ def get_jk_direct(agf2, eri, rdm1, with_j=True, with_k=True, madelung=None):
             ki, kk = divmod(kik, nkpts)
             kj = ki
             kl = agf2.khelper.kconserv[ki,kj,kk]
-            buf = lib.dot(qij[ki,kl].reshape(-1, nmo).conj(), rdm1[kl], c=buf)
+            buf = lib.dot(qij[ki,kl].reshape(-1, nmo), rdm1[kl], c=buf)
             buf = buf.reshape(-1, nmo, nmo).swapaxes(1,2).reshape(-1, nmo)
             vk[ki] = lib.dot(buf.T, qkl[ki,kl,kk].reshape(-1, nmo), c=vk[ki], beta=1).T.conj()
 
@@ -1140,10 +1141,10 @@ if __name__ == '__main__':
             bra, ket = kragf2_ao2mo._make_ao_eris_direct_aftdf(gf2, eri)
         elif isinstance(gf2.with_df, df.FFTDF):
             bra, ket = kragf2_ao2mo._make_ao_eris_direct_fftdf(gf2, eri)
-        ao0 = np.einsum('ablp,abclq->abcpq', bra.conj(), ket).reshape((gf2.nkpts,)*3 + (gf2.nmo,)*4)
+        ao0 = np.einsum('ablp,abclq->abcpq', bra, ket).reshape((gf2.nkpts,)*3 + (gf2.nmo,)*4)
         ao1 = rhf.with_df.ao2mo_7d(np.asarray([[np.eye(gf2.nmo),]*gf2.nkpts]*4), kpts=rhf.kpts) / len(rhf.kpts)
 
-        eri0 = np.einsum('ablp,abclq->abcpq', eri_df.eri[0].conj(), eri_df.eri[1]).reshape((gf2.nkpts,)*3 + (gf2.nmo,)*4)
+        eri0 = np.einsum('ablp,abclq->abcpq', eri_df.eri[0], eri_df.eri[1]).reshape((gf2.nkpts,)*3 + (gf2.nmo,)*4)
         eri1 = eri.eri
         eri2 = rhf.with_df.ao2mo_7d(np.asarray(rhf.mo_coeff)+0j, kpts=rhf.kpts) / len(rhf.kpts)
 
@@ -1152,7 +1153,7 @@ if __name__ == '__main__':
         ca = np.random.random((gf2.nmo, (gf2.nmo-max(gf2.nocc))*2)) + 1.0j * np.random.random((gf2.nmo, (gf2.nmo-max(gf2.nocc))*2))
         qmo0 = np.einsum('pqrs,qi,rj,sa->pija', eri2[0,1,0], ci, cj.conj(), ca)
         qmo1_bra, qmo1_ket = kragf2_ao2mo._make_qmo_eris_direct(gf2, eri_df, (ci,cj,ca), [0,1,0,1])
-        qmo1 = np.dot(qmo1_bra.conj().T, qmo1_ket).reshape(qmo0.shape)
+        qmo1 = np.dot(qmo1_bra.T, qmo1_ket).reshape(qmo0.shape)
         qmo2 = kragf2_ao2mo._make_qmo_eris_incore(gf2, eri, (ci,cj,ca), [0,1,0,1])
 
         print('MO', np.allclose(eri0, eri2), np.allclose(eri1, eri2), np.linalg.norm(eri0-eri2), np.linalg.norm(eri1-eri2))
