@@ -80,8 +80,6 @@ class KnownValues(unittest.TestCase):
 
         self.assertTrue(numpy.allclose(eri0000, eri0000_ref, atol=1e-7))
         self.assertTrue(numpy.allclose(eri1111, eri1111_ref, atol=1e-7))
-        numpy.savetxt('4444.dat', eri4444)
-        numpy.savetxt('4444ref.dat', eri4444_ref)
         self.assertTrue(numpy.allclose(eri4444, eri4444_ref, atol=1e-7))
 
     def test_get_eri_1111(self):
