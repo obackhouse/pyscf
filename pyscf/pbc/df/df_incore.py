@@ -121,9 +121,7 @@ def _get_j2c(
 
     j2c = int2c2e.copy()
 
-    for k in mpi_helper.nrange(len(uniq_kpts)):
-        kpt = uniq_kpts[k]
-
+    for k, kpt in enumerate(uniq_kpts):
         coulG = mydf.weighted_coulG(kpt, False, mesh)
         aoaux = ft_ao.ft_ao(fused_cell, Gv, None, b, gxyz, Gvbase, kpt).T
         LkR = numpy.asarray(aoaux.real, order='C')
@@ -145,10 +143,6 @@ def _get_j2c(
         LkR = LkI = None
         coulG = None
         j2c[k] = fuse(fuse(j2c[k]).T).T
-
-    for k in range(len(uniq_kpts)):
-        mpi_helper.allreduce_safe_inplace(j2c[k])
-        mpi_helper.barrier()
 
     return j2c
 
