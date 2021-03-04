@@ -77,10 +77,6 @@ def build_mats_kragf2_incore(qija, qjia, ei, ej, ea, os_factor=1.0, ss_factor=1.
     vv = vv.reshape(nmo, nmo)
     vev = vev.reshape(nmo, nmo)
 
-    mpi_helper.barrier()
-    mpi_helper.allreduce_safe_inplace(vv)
-    mpi_helper.allreduce_safe_inplace(vev)
-
     #print(['%.5e' % x for x in (np.max(np.absolute(vv1.real-vv.real)), np.max(np.absolute(vv1.imag-vv.imag)), np.max(np.absolute(vv1.real-vv.real)), np.max(np.absolute(vv1.imag-vv.imag)))])
     #print('%.10e %.10e' % (np.max(np.absolute(vev1.real-vev.real)), np.max(np.absolute(vev1.imag-vev.imag))))
     #print(np.all(vv1 == vv), np.all(vev1 == vev))
