@@ -181,12 +181,13 @@ def _cholesky_decomposed_metric(
     return j2c_kpt, j2ctag
 
 
-def _get_j3c(mydf,
-             cell, auxcell, fused_cell, fuse,
-             j2c, int3c2e,
-             uniq_kpts, uniq_inverse, kptij_lst,
-             log,
-             out=None):
+def _get_j3c(
+        mydf,
+        cell, auxcell, fused_cell, fuse,
+        j2c, int3c2e,
+        uniq_kpts, uniq_inverse, kptij_lst,
+        log,
+        out=None):
     '''
     Build j2c using the 2c2e interaction, int2c2e, Eq. 31, and then
     contract with the Cholesky decomposed j2c.
@@ -236,7 +237,7 @@ def _get_j3c(mydf,
                                    adapted_kptjs, out=buf)
 
         for k, ji in enumerate(adapted_ji_idx):
-            v = int3c2e[ji]
+            v = int3c2e[ji]  #FIXME copy needed??
 
             # eq. 31 second term:
             if is_zero(kpt): # and cell.dimension == 3:
@@ -302,6 +303,11 @@ def _get_j3c(mydf,
 def _make_j3c(mydf, cell, auxcell, kptij_lst, cderi_file):
     '''
     Build the j3c array.
+
+    cell: the unit cell for the calculation
+    auxcell: the unit cell for the auxiliary functions
+    chgcell: the unit cell for the smooth Gaussians
+    fused_cell: auxcell and chgcell combined
     '''
 
     t1 = (time.clock(), time.time())
