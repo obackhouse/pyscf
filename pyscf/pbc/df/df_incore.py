@@ -147,7 +147,7 @@ def _get_j2c(
         j2c[k] = fuse(fuse(j2c[k]).T).T
 
     for k in range(len(uniq_kpts)):
-        mpi_helper.allreduce_safe_inplace(j2c)
+        mpi_helper.allreduce_safe_inplace(j2c[k])
         mpi_helper.barrier()
 
     return j2c
