@@ -168,7 +168,7 @@ def _make_mo_eris_incore(agf2, mo_coeff=None):
 
     ##NOTE Uncomment to convert to incore:
     #eris = _make_mo_eris_direct(agf2, mo_coeff)
-    #eris.eri = lib.einsum('ablp,abclq->abcpq', eris.qij.conj(), eris.qkl).reshape((agf2.nkpts,)*3+(agf2.nmo,)*4)
+    #eris.eri = lib.einsum('ablp,abclq->abcpq', eris.qij, eris.qkl).reshape((agf2.nkpts,)*3+(agf2.nmo,)*4)
     #del eris.qij, eris.qkl
 
     #return eris
@@ -247,7 +247,7 @@ def _make_ao_eris_direct_aftdf(agf2, eris):
     mpi_helper.allreduce_safe_inplace(bra)
     mpi_helper.allreduce_safe_inplace(ket)
 
-    return bra.conj(), ket
+    return bra, ket
 
 #TODO: blksize loop over mesh?
 def _make_ao_eris_direct_fftdf(agf2, eris):
@@ -306,7 +306,7 @@ def _make_ao_eris_direct_fftdf(agf2, eris):
     mpi_helper.allreduce_safe_inplace(bra)
     mpi_helper.allreduce_safe_inplace(ket)
 
-    return bra, ket
+    return bra.conj(), ket
 
 #TODO: I think gdf can have different naux at different k-points, but we just pad with zeros
 #TODO bra-ket symmetry? Must split 1/nkpts factor and sign (could be complex?)
@@ -339,7 +339,7 @@ def _make_ao_eris_direct_gdf(agf2, eris):
             p1 = 0
             for qij_r, qij_i, sign in with_df.sr_loop(kpts[[ki,kj]], compact=False):
                 p0, p1 = p1, p1 + qij_r.shape[0] 
-                bra[ki,kj,p0:p1] = (qij_r - qij_i * 1j) * np.sqrt(sign+0j) / np.sqrt(nkpts)
+                bra[ki,kj,p0:p1] = (qij_r + qij_i * 1j) * np.sqrt(sign+0j) / np.sqrt(nkpts)
 
             for kk in range(nkpts):
                 kl = kconserv[ki,kj,kk]
@@ -436,8 +436,8 @@ def _make_mo_eris_direct(agf2, mo_coeff=None):
 
         for ji, ji_idx in enumerate(adapted_ji):
             ki, kj = divmod(adapted_ji[ji], nkpts)
-            ci = mo_coeff[ki].conj()
-            cj = mo_coeff[kj].conj()
+            ci = mo_coeff[ki]
+            cj = mo_coeff[kj]
             qij[ki,kj] = _fao2mo(bra[ki,kj], ci, cj, dtype, out=qij[ki,kj])
 
             for kk in range(nkpts):
@@ -500,7 +500,7 @@ def _make_qmo_eris_direct(agf2, eri, coeffs, kpts):
     naux = eri.eri[0].shape[2]
 
     qwx = eri.eri[0][kx,ki].reshape(-1, nmo)
-    qwi = np.dot(qwx, ci.conj()).reshape(naux, -1)
+    qwi = np.dot(qwx, ci).reshape(naux, -1)
 
     qyz = eri.eri[1][kx,ki,kj].reshape(-1, nmo, nmo)
     qja = _fao2mo(qyz, cj, ca, dtype).reshape(naux, -1)

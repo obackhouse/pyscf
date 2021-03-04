@@ -145,8 +145,8 @@ def _build_mats_kragf2_direct(qxi, qja, qxj, qia, ei, ej, ea, os_factor=1.0, ss_
     #TODO: mesh can be large - block the dot products
     for i in range(nocci):
         qx = np.array(qxi.reshape(naux, nmo, nocci)[:,:,i])
-        xija = lib.dot(qx.T.conj(), qja)
-        xjia = lib.dot(qxj.T.conj(), np.array(qia[:,i*nvir:(i+1)*nvir]))
+        xija = lib.dot(qx.T, qja)
+        xjia = lib.dot(qxj.T, np.array(qia[:,i*nvir:(i+1)*nvir]))
         xjia = xjia.reshape(nmo, noccj*nvir)
         xjia = fpos * xija + fneg * xjia
 

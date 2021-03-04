@@ -69,7 +69,7 @@ class KnownValues(unittest.TestCase):
         eri_ref = eri_ref.reshape(size_7d) / gf2.nkpts
 
         bra, ket = make(gf2, eris)
-        eri_direct = lib.einsum('abQp,abcQq->abcpq', bra.conj(), ket).reshape(size_7d)
+        eri_direct = lib.einsum('abQp,abcQq->abcpq', bra, ket).reshape(size_7d)
         self.assertAlmostEqual(np.max(np.absolute(eri_ref-eri_direct)), 0, prec)
 
     def test_ao_fft(self):
@@ -97,7 +97,7 @@ class KnownValues(unittest.TestCase):
         self.assertAlmostEqual(np.max(np.absolute(eri_ref-eri_incore)), 0, prec)
 
         bra, ket = kragf2_ao2mo._make_mo_eris_direct(gf2).eri
-        eri_direct = lib.einsum('abQp,abcQq->abcpq', bra.conj(), ket).reshape(size_7d)
+        eri_direct = lib.einsum('abQp,abcQq->abcpq', bra, ket).reshape(size_7d)
         self.assertAlmostEqual(np.max(np.absolute(eri_ref-eri_direct)), 0, prec)
 
     def test_mo_fft(self):
