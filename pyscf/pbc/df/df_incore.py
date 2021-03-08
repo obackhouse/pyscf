@@ -26,8 +26,8 @@ def _get_kpt_hash(kpt, tol=KPT_DIFF_TOL):
     prevent the O(N_k) access cost.
     '''
 
-    kpt_round = numpy.rint(numpy.asarray(kpt) / tol)
-    return hash(tuple(kpt_round.ravel()))
+    kpt_round = numpy.rint(numpy.asarray(kpt) / tol).astype(int)
+    return tuple(kpt_round.ravel())
 
 
 def _kconserve_indices(cell, uniq_kpts, kpt):
@@ -432,12 +432,15 @@ class IncoreGDF(GDF):
         j3c = self._cderi['j3c']
         kpti_kptj = numpy.asarray(kpti_kptj)
         k_id = self._cderi['j3c-kptij-hash'].get(_get_kpt_hash(kpti_kptj), [])
+        #if len(k_id):
+        #    assert k_id[0] == member(kpti_kptj, self._cderi['j3c-kptij'])[0]
 
         if len(k_id) > 0:
             v = j3c[k_id[0]].copy()
         else:
             kptji = kpti_kptj[[1,0]]
             k_id = self._cderi['j3c-kptij-hash'].get(_get_kpt_hash(kptji), [])
+            #assert k_id[0] == member(kptji, self._cderi['j3c-kptij'])[0]
             if len(k_id) == 0:
                 raise RuntimeError('j3c for kpts %s is not initialized.\n'
                                    'You need to update the attribute .kpts '
