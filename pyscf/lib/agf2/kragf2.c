@@ -55,6 +55,29 @@ void KAGF2slice_0i2(double complex *a,
 
 
 /*
+ *  b_xy = a_xyi
+ */
+void KAGF2slice_01i(double complex *a,
+                    int x,
+                    int y,
+                    int z,
+                    int idx,
+                    double complex *b)
+{
+    double complex *pa, *pb;
+    int i, j;
+
+    for (i = 0; i < x; i++) {
+        pb = b + i*y;
+        pa = a + i*y*z + idx;
+        for (j = 0; j < y; j++) {
+            pb[j] = pa[j*z];
+        }
+    }
+}
+
+
+/*
  *  d_xy = a + b_x - c_y
  */
 void KAGF2sum_inplace_ener(double complex a,
@@ -179,38 +202,29 @@ void KAGF2ee_vv_vev_islice(double complex *xija,
 
     int i;
 
-    //printf("\n");
 #pragma omp for
     for (i = istart; i < iend; i++) {
         // build xija
         KAGF2slice_0i2(xija, nmo, ni, nja, i, xja);
-        //printf("a %.32f %.32f\n", creal(xja[1]), cimag(xja[1]));
 
         // build xjia
         KAGF2slice_0i2(xjia, nxj, ni, na, i, xia);
-        //printf("b %.32f %.32f\n", creal(xia[1]), cimag(xia[1]));
 
         // inplace xjia = 2 * xija - xjia
         KAGF2sum_inplace(xja, xia, nmo*nja, fpos, fneg);
-        //printf("c %.32f %.32f\n", creal(xia[1]), cimag(xia[1]));
-
         array_conj(xia, nmo*nja);
 
         // build eija = ei + ej - ea
         AGF2sum_inplace_ener(e_i[i], e_j, e_a, nj, na, eja);
-        //printf("d %.32f %.32f\n", creal(eja[1]), cimag(eja[1]));
 
         // vv_xy += xija * (2 yija - yjia)
         zgemm_(&TRANS_T, &TRANS_N, &nmo, &nmo, &nja, &D1, xia, &nja, xja, &nja, &D1, vv_priv, &nmo);
 
         // inplace xija = eija * xija
         KAGF2prod_inplace_ener(eja, xja, nmo, nja);
-        //printf("e %.32f %.32f\n", creal(xja[1]), cimag(xja[1]));
 
         // vev_xy += xija * eija * (2 yija - yjia)
         zgemm_(&TRANS_T, &TRANS_N, &nmo, &nmo, &nja, &D1, xia, &nja, xja, &nja, &D1, vev_priv, &nmo);
-        //printf("f %.32f %.32f\n", creal(vv_priv[1]), cimag(vv_priv[1]));
-        //printf("g %.32f %.32f\n", creal(vev_priv[1]), cimag(vev_priv[1]));
     }
 
     free(eja);
@@ -225,8 +239,102 @@ void KAGF2ee_vv_vev_islice(double complex *xija,
 
     free(vv_priv);
     free(vev_priv);
+}
+}
 
-    //array_conj(vv, nmo*nmo);
-    //array_conj(vev, nmo*nmo);
+
+/*
+ *  density fitting
+ *  (xi|ja) = (xi|Q)(Q|ja)
+ *  vv_xy = (xi|ja) [2(yi|ja) - (yj|ia)]
+ *  vev_xy = (xi|ja) [2(yi|ja) - (yj|ia)] (ei + ej - ea)
+ */
+void KAGF2df_vv_vev_islice(double complex *qxi,
+                           double complex *qja,
+                           double complex *qxj,
+                           double complex *qia,
+                           double *e_i,
+                           double *e_j,
+                           double *e_a,
+                           double os_factor,
+                           double ss_factor,
+                           int nmo,
+                           int ni,
+                           int nj,
+                           int na,
+                           int naux,
+                           int istart,
+                           int iend,
+                           double complex *vv,
+                           double complex *vev)
+{
+    const double complex D0 = 0.0;
+    const double complex D1 = 1.0;
+    const char TRANS_T = 'T';
+    const char TRANS_N = 'N';
+
+    const int nja = nj * na;
+    const int nxj = nmo * nj;
+    const double complex fpos = os_factor + ss_factor;
+    const double complex fneg = -1.0 * ss_factor;
+
+#pragma omp parallel
+{
+    double complex *qa = calloc(naux*na, sizeof(double complex));
+    double complex *qx = calloc(naux*nmo, sizeof(double complex));
+    double *eja = calloc(nja, sizeof(double));
+    double complex *xia = calloc(nmo*nja, sizeof(double complex));
+    double complex *xja = calloc(nmo*nja, sizeof(double complex));
+
+    double complex *vv_priv = calloc(nmo*nmo, sizeof(double complex));
+    double complex *vev_priv = calloc(nmo*nmo, sizeof(double complex));
+
+    int i;
+
+#pragma omp for
+    for (i = istart; i < iend; i++) {
+        // build qx
+        KAGF2slice_01i(qxi, naux, nmo, ni, i, qx);
+
+        // build qa
+        KAGF2slice_0i2(qia, naux, ni, na, i, qa);
+
+        // build xija = xq * qja
+        zgemm_(&TRANS_N, &TRANS_T, &nja, &nmo, &naux, &D1, qja, &nja, qx, &nmo, &D0, xja, &nja);
+
+        // build xjia = xjq * qa
+        zgemm_(&TRANS_N, &TRANS_T, &na, &nxj, &naux, &D1, qa, &na, qxj, &nxj, &D0, xia, &na);
+
+        // inplace xjia = 2 * xija - xjia
+        KAGF2sum_inplace(xja, xia, nmo*nja, fpos, fneg);
+        array_conj(xia, nmo*nja);
+
+        // build eija = ei + ej - ea
+        AGF2sum_inplace_ener(e_i[i], e_j, e_a, nj, na, eja);
+
+        // vv_xy += xija * (2 yija - yjia)
+        zgemm_(&TRANS_T, &TRANS_N, &nmo, &nmo, &nja, &D1, xia, &nja, xja, &nja, &D1, vv_priv, &nmo);
+
+        // inplace xija = eija * xija
+        KAGF2prod_inplace_ener(eja, xja, nmo, nja);
+
+        // vev_xy += xija * eija * (2 yija - yjia)
+        zgemm_(&TRANS_T, &TRANS_N, &nmo, &nmo, &nja, &D1, xia, &nja, xja, &nja, &D1, vev_priv, &nmo);
+    }
+
+    free(qa);
+    free(qx);
+    free(eja);
+    free(xia);
+    free(xja);
+
+#pragma omp critical
+    for (i = 0; i < (nmo*nmo); i++) {
+        vv[i] += vv_priv[i];
+        vev[i] += vev_priv[i];
+    }
+
+    free(vv_priv);
+    free(vev_priv);
 }
 }

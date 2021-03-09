@@ -35,6 +35,7 @@ def get_cell_he():
 
 def get_krhf(cell, with_df, kpts):
     krhf = scf.KRHF(cell)
+    krhf.max_cycle = 1  # non-canonical
     krhf.with_df = with_df(cell)
     krhf.kpts = cell.make_kpts(kpts)
     krhf.exxdiv = None
@@ -61,6 +62,7 @@ class KnownValues(unittest.TestCase):
 
     def _test_fock(self, rhf):
         rhf.run()
+        rhf.mo_coeff = [np.random.random(x.shape) + np.random.random(x.shape) * 1.0j for x in rhf.mo_coeff]
         gf2 = agf2.KRAGF2(rhf)
         prec = 10
 

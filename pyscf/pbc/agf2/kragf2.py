@@ -198,6 +198,8 @@ def build_se_part(agf2, eri, gf_occ, gf_vir, os_factor=1.0, ss_factor=1.0):
             vv[kx] += vv_k
             vev[kx] += vev_k
 
+            del qxi, qja, qxj, qia
+
     else:
         for kxia in mpi_helper.nrange(nkpts**3):
             kxi, ka = divmod(kxia, nkpts)
@@ -214,6 +216,8 @@ def build_se_part(agf2, eri, gf_occ, gf_vir, os_factor=1.0, ss_factor=1.0):
             vv_k, vev_k = _kagf2.build_mats_kragf2_incore(pija, pjia, ei, ej, ea, **facs)
             vv[kx] += vv_k
             vev[kx] += vev_k
+
+            del pija, pjia
 
     mpi_helper.barrier()
     for kx in range(nkpts):
@@ -296,7 +300,7 @@ def get_jk_direct(agf2, eri, rdm1, with_j=True, with_k=True, madelung=None):
             ki, kk = divmod(kik, nkpts)
             kj = ki
             kl = agf2.khelper.kconserv[ki,kj,kk]
-            buf = lib.dot(qij[ki,kl].reshape(-1, nmo), rdm1[kl], c=buf)
+            buf = lib.dot(qij[ki,kl].reshape(-1, nmo), rdm1[kl].conj(), c=buf)
             buf = buf.reshape(-1, nmo, nmo).swapaxes(1,2).reshape(-1, nmo)
             vk[ki] = lib.dot(buf.T, qkl[ki,kl,kk].reshape(-1, nmo), c=vk[ki], beta=1).T.conj()
 
@@ -694,6 +698,10 @@ class KRAGF2(ragf2.RAGF2):
     def ao2mo(self, mo_coeff=None):
         ''' Get the electronic repulsion integrals in MO basis.
         '''
+        #TODO FIXME 
+        from pyscf.pbc import df
+        if self.direct and type(self.with_df) == df.FFTDF:
+            raise ValueError('direct + FFT broken')
 
         if self.direct:
             eri = kragf2_ao2mo._make_mo_eris_direct(self, mo_coeff)
