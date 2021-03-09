@@ -73,15 +73,62 @@ def build_mats_kragf2_incore(qija, qjia, ei, ej, ea, os_factor=1.0, ss_factor=1.
     vv = vv.reshape(nmo, nmo)
     vev = vev.reshape(nmo, nmo)
 
-    #print(['%.5e' % x for x in (np.max(np.absolute(vv1.real-vv.real)), np.max(np.absolute(vv1.imag-vv.imag)), np.max(np.absolute(vv1.real-vv.real)), np.max(np.absolute(vv1.imag-vv.imag)))])
-    #print('%.10e %.10e' % (np.max(np.absolute(vev1.real-vev.real)), np.max(np.absolute(vev1.imag-vev.imag))))
-    #print(np.all(vv1 == vv), np.all(vev1 == vev))
-
     return vv, vev
 
 
 def build_mats_kragf2_direct(qxi, qja, qxj, qia, ei, ej, ea, os_factor=1.0, ss_factor=1.0):
-    return _build_mats_kragf2_direct(qxi, qja, qxj, qia, ei, ej, ea, os_factor=os_factor, ss_factor=ss_factor)
+    #return _build_mats_kragf2_direct(qxi, qja, qxj, qia, ei, ej, ea, os_factor=os_factor, ss_factor=ss_factor)
+    #vv1, vev1 = _build_mats_kragf2_direct(qxi, qja, qxj, qia, ei, ej, ea, os_factor=os_factor, ss_factor=ss_factor)
+    ''' Wraps KAGF2df_vv_vev_islice
+    '''
+
+    fdrv = getattr(libagf2, 'KAGF2df_vv_vev_islice')
+
+    naux = qxi.shape[0]
+    ni = ei.size
+    nj = ej.size
+    na = ea.size
+    nmo = qxi.size // (naux*ni)
+    assert qxi.size == (naux*nmo*ni)
+    assert qja.size == (naux*nj*na)
+    assert qxj.size == (naux*nmo*nj)
+    assert qia.size == (naux*ni*na)
+
+    qxi = np.asarray(qxi, order='C', dtype=np.complex128)
+    qja = np.asarray(qja, order='C', dtype=np.complex128)
+    qxj = np.asarray(qxj, order='C', dtype=np.complex128)
+    qia = np.asarray(qia, order='C', dtype=np.complex128)
+    e_i = np.asarray(ei, order='C')
+    e_j = np.asarray(ej, order='C')
+    e_a = np.asarray(ea, order='C')
+
+    vv = np.zeros((nmo*nmo), dtype=np.complex128)
+    vev = np.zeros((nmo*nmo), dtype=np.complex128)
+
+    fdrv(qxi.ctypes.data_as(ctypes.c_void_p),
+         qja.ctypes.data_as(ctypes.c_void_p),
+         qxj.ctypes.data_as(ctypes.c_void_p),
+         qia.ctypes.data_as(ctypes.c_void_p),
+         e_i.ctypes.data_as(ctypes.c_void_p),
+         e_j.ctypes.data_as(ctypes.c_void_p),
+         e_a.ctypes.data_as(ctypes.c_void_p),
+         ctypes.c_double(os_factor),
+         ctypes.c_double(ss_factor),
+         ctypes.c_int(nmo),
+         ctypes.c_int(ni),
+         ctypes.c_int(nj),
+         ctypes.c_int(na),
+         ctypes.c_int(naux),
+         ctypes.c_int(0),
+         ctypes.c_int(ni),
+         vv.ctypes.data_as(ctypes.c_void_p),
+         vev.ctypes.data_as(ctypes.c_void_p),
+    )
+
+    vv = vv.reshape(nmo, nmo)
+    vev = vev.reshape(nmo, nmo)
+
+    return vv, vev
 
 
 def _build_mats_kragf2_incore(qija, qjia, ei, ej, ea, os_factor=1.0, ss_factor=1.0):
