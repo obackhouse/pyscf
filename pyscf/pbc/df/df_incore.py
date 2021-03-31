@@ -412,6 +412,8 @@ class IncoreGDF(GDF):
             self._cderi = self._make_j3c(self.cell, self.auxcell, kptij_lst, cderi)
             t1 = logger.timer_debug1(self, 'j3c', *t1)
 
+            self.blockdim = self.get_naoaux() # default to one block
+
         return self
 
     _make_j3c = _make_j3c
