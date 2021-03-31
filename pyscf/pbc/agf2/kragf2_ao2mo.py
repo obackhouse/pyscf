@@ -173,30 +173,6 @@ def _make_mo_eris_incore(agf2, mo_coeff=None):
 
     #return eris
 
-def _get_naux_from_cderi(with_df):
-    ''' Get the largest possible naux from the _cderi object. There
-        can be different numbers at each k-point.
-    '''
-
-    cell = with_df.cell
-    load3c = df.df._load3c
-    kpts = with_df.kpts
-    nkpts = len(kpts)
-
-    naux = 0
-
-    for kp in range(nkpts):
-        for kq in range(nkpts):
-            with load3c(with_df._cderi, 'j3c', kpts[[kp,kq]], 'j3c-kptij') as j3c:
-                naux = max(naux, j3c.shape[0])
-
-                if cell.dimension == 2 and cell.low_dim_ft_type != 'inf_vacuum':
-                    with load3c(with_df._cderi, 'j3c-', kpts[[kp,kq]], 'j3c-kptij',
-                                ignore_key_error=True) as j3c:
-                        naux = max(naux, j3c.shape[0])
-
-    return naux
-
 ##TODO: fix block size?? ft_loop has max_memory argument
 def _make_ao_eris_direct_aftdf(agf2, eris):
     ''' Get the 3c AO tensors for AFTDF '''
@@ -206,7 +182,7 @@ def _make_ao_eris_direct_aftdf(agf2, eris):
     dtype = complex
     kpts = eris.kpts
     nkpts = len(kpts)
-    ngrids = len(cell.gen_uniform_grids(with_df.mesh))
+    ngrids = with_df.auxcell.nao_nr()
     nao = cell.nao
     kconserv = tools.get_kconserv(cell, kpts)
     if agf2.keep_exxdiv and agf2._scf.exxdiv in ['vcut_sph', 'vcut_ws']:
