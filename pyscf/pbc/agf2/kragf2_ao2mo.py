@@ -182,7 +182,7 @@ def _make_ao_eris_direct_aftdf(agf2, eris):
     dtype = complex
     kpts = eris.kpts
     nkpts = len(kpts)
-    ngrids = with_df.auxcell.nao_nr()
+    ngrids = len(cell.gen_uniform_grids(with_df.mesh))
     nao = cell.nao
     kconserv = tools.get_kconserv(cell, kpts)
     if agf2.keep_exxdiv and agf2._scf.exxdiv in ['vcut_sph', 'vcut_ws']:
@@ -296,7 +296,7 @@ def _make_ao_eris_direct_gdf(agf2, eris):
     kpts = eris.kpts
     nkpts = len(kpts)
     kconserv = tools.get_kconserv(cell, kpts)
-    ngrids = _get_naux_from_cderi(with_df)
+    ngrids = with_df.auxcell.nao_nr()
 
     bra = np.zeros((nkpts, nkpts, ngrids, cell.nao**2), dtype=dtype)
     ket = np.zeros((nkpts, nkpts, nkpts, ngrids, cell.nao**2), dtype=dtype)
