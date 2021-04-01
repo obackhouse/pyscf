@@ -1024,6 +1024,7 @@ class KRAGF2(ragf2.RAGF2):
         e_ip = np.asarray(e_ip)
         v_ip = np.asarray(v_ip)
 
+        #TODO this is then different than what is printed and stored in self.gf !?!?!?! #FIXME
         if not self.keep_exxdiv:
             madelung = tools.madelung(self.cell, self.kpts)
             e_ip += madelung
