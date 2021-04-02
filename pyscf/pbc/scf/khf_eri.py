@@ -54,6 +54,10 @@ def get_jk(mf, cell, dm_kpts, kpts, kpts_band=None, with_j=True, with_k=True,
             if with_k:
                 vk[i,ki] += lib.einsum('ilkj,lk->ij', mf._eri[ki,kl,kk], dm)
 
+    mpi_helper.barrier()
+    mpi_helper.allreduce_safe_inplace(vj)
+    mpi_helper.allreduce_safe_inplace(vk)
+
     if with_k and exxdiv == 'ewald':
         _ewald_exxdiv_for_G0(cell, kpts, dms, vk, kpts_band)
 

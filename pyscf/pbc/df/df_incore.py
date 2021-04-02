@@ -454,6 +454,9 @@ def _make_eri(mydf, kpts, kconserv=None, out=None):
             v = lib.dot(j3c_ij.T, j3c_kl, alpha=1/nkpts)
             out[ki,kj,kk] = v.reshape(nao, nao, nao, nao)
 
+    mpi_helper.barrier()
+    mpi_helper.allreduce_safe_inplace(out)
+
     return out
 
 
