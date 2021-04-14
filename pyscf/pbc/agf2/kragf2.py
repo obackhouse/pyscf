@@ -227,9 +227,12 @@ def build_se_part(agf2, eri, gf_occ, gf_vir, os_factor=1.0, ss_factor=1.0):
     se = []
     for kx in range(nkpts):
         #TODO remove checks
-        assert np.allclose(vv[kx], vv[kx].T.conj())
-        assert np.allclose(vev[kx], vev[kx].T.conj())
-        e, c = _agf2.cholesky_build(vv[kx], vev[kx], do_twice=True)
+        if (not np.allclose(vv[kx], vv[kx].T.conj())) or (not np.allclose(vev[kx], vev[kx].T.conj())):
+            if mpi_helper.rank == 0:
+                print('NOT HERM CONJ vv: %.12g vev: %.12g' % (np.max(np.absolute(vv[kx]-vv[kx].T.conj())), np.max(np.absolute(vev[kx]-vev[kx].T.conj()))))
+            vv[kx] = 0.5 * (vv[kx] + vv[kx].T.conj())
+            vev[kx] = 0.5 * (vev[kx] + vev[kx].T.conj())
+        e, c = _agf2.cholesky_build(vv[kx], vev[kx], eps=1e-14)
         se_kx = aux.SelfEnergy(e, c, chempot=gf_occ[kx].chempot)
         se_kx.remove_uncoupled(tol=tol)
         se.append(se_kx)
@@ -383,6 +386,13 @@ def get_jk(agf2, eri, rdm1, with_j=True, with_k=True, madelung=None):
         vj, vk = get_jk_direct(agf2, eri, rdm1, with_j=with_j, with_k=with_k, madelung=madelung)
     else:
         vj, vk = get_jk_incore(agf2, eri, rdm1, with_j=with_j, with_k=with_k, madelung=madelung)
+    for kx in range(len(rdm1)):
+        #TODO remove checks
+        if (not np.allclose(vj[kx], vj[kx].T.conj())) or (not np.allclose(vk[kx], vk[kx].T.conj())):
+            if mpi_helper.rank == 0:
+                print('NOT HERM CONJ j: %.12g k: %.12g' % (np.max(np.absolute(vj[kx]-vj[kx].T.conj())), np.max(np.absolute(vk[kx]-vk[kx].T.conj()))))
+        vj[kx] = 0.5 * (vj[kx] + vj[kx].T.conj())
+        vk[kx] = 0.5 * (vk[kx] + vk[kx].T.conj())
 
     return vj, vk
     
@@ -705,8 +715,18 @@ class KRAGF2(ragf2.RAGF2):
 
         if self.direct:
             eri = kragf2_ao2mo._make_mo_eris_direct(self, mo_coeff)
+            l, r = eri.eri
+            mpi_helper.barrier()
+            mpi_helper.allreduce_safe_inplace(l)
+            mpi_helper.allreduce_safe_inplace(r)
+            mpi_helper.barrier()
+            eri.eri = (l / mpi_helper.size, r / mpi_helper.size)
         else:
             eri = kragf2_ao2mo._make_mo_eris_incore(self, mo_coeff)
+            mpi_helper.barrier()
+            mpi_helper.allreduce_safe_inplace(eri.eri)
+            mpi_helper.barrier()
+            eri.eri /= mpi_helper.size
 
         return eri
 
@@ -851,12 +871,12 @@ class KRAGF2(ragf2.RAGF2):
 
                 vv = np.dot(se_occ.coupling, se_occ.coupling.T.conj())
                 vev = np.dot(se_occ.coupling * se_occ.energy[None], se_occ.coupling.T.conj())
-                e, c = _agf2.cholesky_build(vv, vev)
+                e, c = _agf2.cholesky_build(vv, vev, eps=1e-14)
                 se_occ = aux.SelfEnergy(e, c, chempot=se_occ.chempot)
                 
                 vv = np.dot(se_vir.coupling, se_vir.coupling.T.conj())
                 vev = np.dot(se_vir.coupling * se_vir.energy[None], se_vir.coupling.T.conj())
-                e, c = _agf2.cholesky_build(vv, vev)
+                e, c = _agf2.cholesky_build(vv, vev, eps=1e-14)
                 se_vir = aux.SelfEnergy(e, c, chempot=se_vir.chempot)
 
                 se[kx] = aux.combine(se_occ, se_vir)
@@ -896,8 +916,8 @@ class KRAGF2(ragf2.RAGF2):
         se_out = []
         for kx in range(self.nkpts):
             chempot = se[kx].chempot
-            se_occ = aux.SelfEnergy(*_agf2.cholesky_build(vv_occ[kx], vev_occ[kx]), chempot=chempot)
-            se_vir = aux.SelfEnergy(*_agf2.cholesky_build(vv_vir[kx], vev_vir[kx]), chempot=chempot)
+            se_occ = aux.SelfEnergy(*_agf2.cholesky_build(vv_occ[kx], vev_occ[kx], eps=1e-14), chempot=chempot)
+            se_vir = aux.SelfEnergy(*_agf2.cholesky_build(vv_vir[kx], vev_vir[kx], eps=1e-14), chempot=chempot)
             se_out.append(aux.combine(se_occ, se_vir))
 
         return se_out

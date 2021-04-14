@@ -22,6 +22,7 @@ from .df import DF, GDF
 from .mdf import MDF
 from .aft import AFTDF
 from .fft import FFTDF
+from .df_incore import IncoreDF, IncoreGDF
 from pyscf.df.addons import aug_etb
 
 # For backward compatibility

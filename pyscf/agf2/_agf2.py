@@ -26,7 +26,7 @@ libagf2 = lib.load_library('libagf2')
 
 
 #TODO: test that do_twice improves things before pushing change
-def cholesky_build(vv, vev, eps=1e-16, do_twice=False):
+def cholesky_build(vv, vev, eps=1e-16):
     ''' Constructs the truncated auxiliaries from :attr:`vv` and :attr:`vev`.
         Performs a Cholesky decomposition via :func:`numpy.linalg.cholesky`,
         for a positive-definite or positive-semidefinite matrix. For the
@@ -43,25 +43,15 @@ def cholesky_build(vv, vev, eps=1e-16, do_twice=False):
     try:
         b = np.linalg.cholesky(vv).conj().T
     except np.linalg.LinAlgError:
+        new_eps = eps*100
         w, v = np.linalg.eigh(vv)
+        if new_eps > 1e-8:
+            raise ValueError('eps got too low, w: %s' % repr(w))
         w[w < eps] = eps
         vv_posdef = np.dot(np.dot(v, np.diag(w)), v.T.conj())
-        b = np.linalg.cholesky(vv_posdef).conj().T
+        return cholesky_build(vv_posdef, vev, eps=new_eps)
 
     b_inv = np.linalg.inv(b)
-
-    if do_twice:
-        vv_next = np.dot(np.dot(b_inv.T.conj(), vv), b_inv)
-        try:
-            b_next = np.linalg.cholesky(vv_next).conj().T
-        except np.linalg.LinAlgError:
-            w, v = np.linalg.eigh(vv_next)
-            w[w < eps] = eps
-            vv_posdef = np.dot(np.dot(v, np.diag(w)), v.T.conj())
-            b_next = np.linalg.cholesky(vv_posdef).conj().T
-
-        b = np.dot(b_next, b)
-        b_inv = np.linalg.inv(b)
 
     m = np.dot(np.dot(b_inv.T.conj(), vev), b_inv)
     e, c = np.linalg.eigh(m)

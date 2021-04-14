@@ -108,8 +108,20 @@ TIMER_LEVEL  = getattr(pyscf.__config__, 'TIMER_LEVEL', DEBUG)
 
 sys.verbose = NOTE
 
+try:
+    from mpi4py import MPI
+    comm = MPI.COMM_WORLD
+    size = comm.Get_size()
+    rank = comm.Get_rank()
+except:
+    comm = None
 def flush(rec, msg, *args):
-    rec.stdout.write(msg%args)
+    full_msg = msg % args
+    if comm is not None:
+        if size > 1:
+            full_msg = full_msg.replace('\n', '\n[rank %4d] ' % rank)
+            full_msg = ('[rank %4d] ' % rank) + full_msg
+    rec.stdout.write(full_msg)
     rec.stdout.write('\n')
     rec.stdout.flush()
 

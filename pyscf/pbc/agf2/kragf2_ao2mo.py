@@ -113,7 +113,7 @@ def _make_mo_eris_incore(agf2, mo_coeff=None):
     eris = _ChemistsERIs()
     eris._common_init_(agf2, mo_coeff)
     with_df = agf2.with_df
-    dtype = complex
+    dtype = np.complex128
 
     nmo = agf2.nmo
     npair = nmo * (nmo+1) // 2
@@ -203,7 +203,7 @@ def _make_ao_eris_direct_aftdf(agf2, eris):
 
     with_df = agf2.with_df
     cell = with_df.cell
-    dtype = complex
+    dtype = np.complex128
     kpts = eris.kpts
     nkpts = len(kpts)
     ngrids = len(cell.gen_uniform_grids(with_df.mesh))
@@ -255,7 +255,7 @@ def _make_ao_eris_direct_fftdf(agf2, eris):
 
     with_df = agf2.with_df
     cell = with_df.cell
-    dtype = complex
+    dtype = np.complex128
     kpts = eris.kpts
     nkpts = len(kpts)
     kconserv = tools.get_kconserv(cell, kpts)
@@ -316,11 +316,12 @@ def _make_ao_eris_direct_gdf(agf2, eris):
 
     with_df = agf2.with_df
     cell = with_df.cell
-    dtype = complex
+    dtype = np.complex128
     kpts = eris.kpts
     nkpts = len(kpts)
     kconserv = tools.get_kconserv(cell, kpts)
-    ngrids = _get_naux_from_cderi(with_df)
+    #ngrids = _get_naux_from_cderi(with_df)
+    ngrids = with_df.auxcell.nao_nr()
 
     bra = np.zeros((nkpts, nkpts, ngrids, cell.nao**2), dtype=dtype)
     ket = np.zeros((nkpts, nkpts, nkpts, ngrids, cell.nao**2), dtype=dtype)
@@ -348,6 +349,8 @@ def _make_ao_eris_direct_gdf(agf2, eris):
                 for qkl_r, qkl_i, sign in with_df.sr_loop(kpts[[kk,kl]], compact=False):
                     q0, q1 = q1, q1 + qkl_r.shape[0]
                     ket[ki,kj,kk,q0:q1] = (qkl_r + qkl_i * 1j) * np.sqrt(sign+0j) / np.sqrt(nkpts)
+
+        qij_r = qij_i = qkl_r = qkl_i = None
 
     mpi_helper.barrier()
     mpi_helper.allreduce_safe_inplace(bra)
@@ -383,7 +386,7 @@ def _fao2mo(eri, cp, cq, dtype, out=None):
     if dtype in [np.float, np.float64]:
         out = ao2mo._ao2mo.nr_e2(eri, cpq, spq, out=out, **sym)
     else:
-        cpq = np.asarray(cpq, dtype=complex)
+        cpq = np.asarray(cpq, dtype=np.complex128)
         out = ao2mo._ao2mo.r_e2(eri, cpq, spq, [], None, out=out)
 
     return out.reshape(naux, npq)
@@ -418,7 +421,7 @@ def _make_mo_eris_direct(agf2, mo_coeff=None):
     else:
         raise ValueError('Unknown DF type %s' % type(with_df))
 
-    dtype = complex
+    dtype = np.complex128
     naux = bra.shape[2]
 
     kij = np.array([(ki,kj) for ki in kpts for kj in kpts])
