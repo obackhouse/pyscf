@@ -166,7 +166,7 @@ def build_se_part(agf2, eri, gf_occ, gf_vir, os_factor=1.0, ss_factor=1.0):
     khelper = agf2.khelper
     kconserv = khelper.kconserv
 
-    if isinstance(eri.eri, tuple):
+    if agf2.direct:
         fmo2qmo = kragf2_ao2mo._make_qmo_eris_direct
     else:
         fmo2qmo = kragf2_ao2mo._make_qmo_eris_incore
@@ -174,50 +174,33 @@ def build_se_part(agf2, eri, gf_occ, gf_vir, os_factor=1.0, ss_factor=1.0):
     vv = np.zeros((nkpts, nmo, nmo), dtype=np.complex128)
     vev = np.zeros((nkpts, nmo, nmo), dtype=np.complex128)
 
-    if isinstance(eri.eri, (tuple, list)):
-        naux = eri.naux
+    #FIXME: this probably isn't true...
+    # constraining kj via conservation instead of ka means that we
+    # don't have to do any padding tricks, as kx,ki,ka are all in
+    # independent spaces
+    #FIXME the sizes can still be different i think :(
+    for kxia in mpi_helper.nrange(nkpts**3):
+        kxi, ka = divmod(kxia, nkpts)
+        kx, ki = divmod(kxi, nkpts)
+        kj = kconserv[kx,ki,ka]
 
-        #FIXME: this probably isn't true...
-        # constraining kj via conservation instead of ka means that we
-        # don't have to do any padding tricks, as kx,ki,ka are all in
-        # independent spaces
-        #FIXME the sizes can still be different i think :(
-        for kxia in mpi_helper.nrange(nkpts**3):
-            kxi, ka = divmod(kxia, nkpts)
-            kx, ki = divmod(kxi, nkpts)
-            kj = kconserv[kx,ki,ka]
+        ci, ei, ni = gf_occ[ki].coupling, gf_occ[ki].energy, gf_occ[ki].naux
+        cj, ej, nj = gf_occ[kj].coupling, gf_occ[kj].energy, gf_occ[kj].naux
+        ca, ea, na = gf_vir[ka].coupling, gf_vir[ka].energy, gf_vir[ka].naux
 
-            ci, ei, ni = gf_occ[ki].coupling, gf_occ[ki].energy, gf_occ[ki].naux
-            cj, ej, nj = gf_occ[kj].coupling, gf_occ[kj].energy, gf_occ[kj].naux
-            ca, ea, na = gf_vir[ka].coupling, gf_vir[ka].energy, gf_vir[ka].naux
-
+        if agf2.direct:
             qxi, qja = fmo2qmo(agf2, eri, (ci,cj,ca), (kx,ki,kj,ka))
             qxj, qia = fmo2qmo(agf2, eri, (cj,ci,ca), (kx,kj,ki,ka))
-
             vv_k, vev_k = _kagf2.build_mats_kragf2_direct(qxi, qja, qxj, qia, ei, ej, ea, **facs)
-            vv[kx] += vv_k
-            vev[kx] += vev_k
-
             del qxi, qja, qxj, qia
-
-    else:
-        for kxia in mpi_helper.nrange(nkpts**3):
-            kxi, ka = divmod(kxia, nkpts)
-            kx, ki = divmod(kxi, nkpts)
-            kj = kconserv[kx,ki,ka]
-
-            ci, ei, ni = gf_occ[ki].coupling, gf_occ[ki].energy, gf_occ[ki].naux
-            cj, ej, nj = gf_occ[kj].coupling, gf_occ[kj].energy, gf_occ[kj].naux
-            ca, ea, na = gf_vir[ka].coupling, gf_vir[ka].energy, gf_vir[ka].naux
-
+        else:
             pija = fmo2qmo(agf2, eri, (ci,cj,ca), (kx,ki,kj,ka))
             pjia = fmo2qmo(agf2, eri, (cj,ci,ca), (kx,kj,ki,ka))
-
             vv_k, vev_k = _kagf2.build_mats_kragf2_incore(pija, pjia, ei, ej, ea, **facs)
-            vv[kx] += vv_k
-            vev[kx] += vev_k
-
             del pija, pjia
+
+        vv[kx] += vv_k
+        vev[kx] += vev_k
 
     mpi_helper.barrier()
     for kx in range(nkpts):
@@ -226,9 +209,19 @@ def build_se_part(agf2, eri, gf_occ, gf_vir, os_factor=1.0, ss_factor=1.0):
 
     se = []
     for kx in range(nkpts):
-        #TODO remove checks
-        assert np.allclose(vv[kx], vv[kx].T.conj())
-        assert np.allclose(vev[kx], vev[kx].T.conj())
+        #TODO remove checks?
+        if not np.allclose(vv[kx], vv[kx].T.conj()):
+            error = np.max(np.absolute(vv[kx]-vv[kx].T.conj()))
+            log.debug1('0th moment not hermitian at kpt %d, '
+                       'error = %.3g', kx, error)
+        vv[kx] = 0.5 * (vv[kx] + vv[kx].T.conj())
+
+        if not np.allclose(vev[kx], vev[kx].T.conj()):
+            error = np.max(np.absolute(vev[kx]-vev[kx].T.conj()))
+            log.debug1('1st moment not hermitian at kpt %d, '
+                       'error = %.3g', kx, error)
+        vev[kx] = 0.5 * (vev[kx] + vev[kx].T.conj())
+                        
         e, c = _agf2.cholesky_build(vv[kx], vev[kx], do_twice=True)
         se_kx = aux.SelfEnergy(e, c, chempot=gf_occ[kx].chempot)
         se_kx.remove_uncoupled(tol=tol)
@@ -267,12 +260,10 @@ def get_jk_direct(agf2, eri, rdm1, with_j=True, with_k=True, madelung=None):
 
     nkpts = agf2.nkpts
     nmo = agf2.nmo
-    naux = eri[0].shape[2]
+    naux = eri.shape[2]
     dtype = np.result_type(eri[0].dtype, eri[1].dtype, *[x.dtype for x in rdm1])
 
-    qij, qkl = eri
-    qij = qij.reshape(nkpts, nkpts, naux, nmo**2)
-    qkl = qkl.reshape(nkpts, nkpts, nkpts, naux, nmo**2)
+    eri = eri.reshape(nkpts, nkpts, naux, nmo**2)
 
     vj = vk = None
 
@@ -284,8 +275,8 @@ def get_jk_direct(agf2, eri, rdm1, with_j=True, with_k=True, madelung=None):
             ki, kk = divmod(kik, nkpts)
             kj = ki
             kl = agf2.khelper.kconserv[ki,kj,kk]
-            buf = np.dot(qkl[ki,kj,kk], rdm1[kl].ravel(), out=buf)
-            vj[ki] += np.dot(qij[ki,kj].T, buf)
+            buf = np.dot(eri[kk,kl], rdm1[kl].ravel(), out=buf)
+            vj[ki] += np.dot(eri[ki,kj].T, buf)
 
         vj = vj.reshape(nkpts, nmo, nmo)
 
@@ -300,9 +291,9 @@ def get_jk_direct(agf2, eri, rdm1, with_j=True, with_k=True, madelung=None):
             ki, kk = divmod(kik, nkpts)
             kj = ki
             kl = agf2.khelper.kconserv[ki,kj,kk]
-            buf = lib.dot(qij[ki,kl].reshape(-1, nmo), rdm1[kl].conj(), c=buf)
+            buf = lib.dot(eri[ki,kl].reshape(-1, nmo), rdm1[kl].conj(), c=buf)
             buf = buf.reshape(-1, nmo, nmo).swapaxes(1,2).reshape(-1, nmo)
-            vk[ki] = lib.dot(buf.T, qkl[ki,kl,kk].reshape(-1, nmo), c=vk[ki], beta=1).T.conj()
+            vk[ki] = lib.dot(buf.T, eri[kk,kj].reshape(-1, nmo), c=vk[ki], beta=1).T.conj()
 
         mpi_helper.barrier()
         mpi_helper.allreduce_safe_inplace(vk)
@@ -379,10 +370,22 @@ def get_jk_incore(agf2, eri, rdm1, with_j=True, with_k=True, madelung=None):
 
 
 def get_jk(agf2, eri, rdm1, with_j=True, with_k=True, madelung=None):
-    if isinstance(eri, (tuple, list)):
+    if agf2.direct:
         vj, vk = get_jk_direct(agf2, eri, rdm1, with_j=with_j, with_k=with_k, madelung=madelung)
     else:
         vj, vk = get_jk_incore(agf2, eri, rdm1, with_j=with_j, with_k=with_k, madelung=madelung)
+
+    for kx in range(len(rdm1)):
+        if not np.allclose(vj[kx], vj[kx].T.conj()):
+            error = np.max(np.absolute(vj[kx]-vj[kx].T.conj()))
+            log.debug1('vj not hermitian at kpt %d, error = %.3g', kx, error)
+        vj[kx] = 0.5 * (vj[kx] + vj[kx].T.conj())
+
+    for kx in range(len(rdm1)):
+        if not np.allclose(vk[kx], vk[kx].T.conj()):
+            error = np.max(np.absolute(vk[kx]-vk[kx].T.conj()))
+            log.debug1('vk not hermitian at kpt %d, error = %.3g', kx, error)
+        vk[kx] = 0.5 * (vk[kx] + vk[kx].T.conj())
 
     return vj, vk
     
@@ -708,6 +711,15 @@ class KRAGF2(ragf2.RAGF2):
         else:
             eri = kragf2_ao2mo._make_mo_eris_incore(self, mo_coeff)
 
+        # Ensure that errors are equal on different processes, can be
+        # different with hybrid parallelism due to non-commutative
+        # arithmetic under rounding
+        #TODO do this blockwise???
+        mpi_helper.barrier()
+        mpi_helper.allreduce_safe_inplace(eri.eri)
+        mpi_helper.barrier()
+        eri.eri /= mpi_helper.size
+
         return eri
 
     def make_rdm1(self, gf=None):
@@ -1024,6 +1036,7 @@ class KRAGF2(ragf2.RAGF2):
         e_ip = np.asarray(e_ip)
         v_ip = np.asarray(v_ip)
 
+        #TODO this is then different than what is printed and stored in self.gf !?!?!?! #FIXME
         if not self.keep_exxdiv:
             madelung = tools.madelung(self.cell, self.kpts)
             e_ip += madelung

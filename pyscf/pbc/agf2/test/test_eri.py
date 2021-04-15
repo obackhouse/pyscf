@@ -19,6 +19,7 @@
 import unittest
 import numpy as np
 from pyscf.pbc import gto, scf, df, tools, agf2
+from pyscf.pbc.lib.kpts_helper import get_kconserv
 from pyscf.pbc.agf2 import kragf2_ao2mo
 from pyscf import scf as mol_scf
 from pyscf import lib, ao2mo
@@ -58,31 +59,31 @@ class KnownValues(unittest.TestCase):
     def tearDownClass(self):
         del self.cell, self.rhf_fft, self.rhf_aft, self.rhf_gdf, self.rhf_mdf
 
-    def _test_ao(self, rhf, make):
-        gf2 = agf2.KRAGF2(rhf)
-        eris = lambda x: None
-        eris.kpts = gf2.kpts
-        prec = 10
+    #def _test_ao(self, rhf, make):
+    #    gf2 = agf2.KRAGF2(rhf)
+    #    eris = lambda x: None
+    #    eris.kpts = gf2.kpts
+    #    prec = 10
 
-        size_7d = (gf2.nkpts,)*3 + (self.cell.nao,)*4
-        eri_ref = gf2.with_df.ao2mo_7d([np.array([np.eye(self.cell.nao),]*gf2.nkpts)]*4)
-        eri_ref = eri_ref.reshape(size_7d) / gf2.nkpts
+    #    size_7d = (gf2.nkpts,)*3 + (self.cell.nao,)*4
+    #    eri_ref = gf2.with_df.ao2mo_7d([np.array([np.eye(self.cell.nao),]*gf2.nkpts)]*4)
+    #    eri_ref = eri_ref.reshape(size_7d) / gf2.nkpts
 
-        bra, ket = make(gf2, eris)
-        eri_direct = lib.einsum('abQp,abcQq->abcpq', bra, ket).reshape(size_7d)
-        self.assertAlmostEqual(np.max(np.absolute(eri_ref-eri_direct)), 0, prec)
+    #    bra, ket = make(gf2, eris)
+    #    eri_direct = lib.einsum('abQp,abcQq->abcpq', bra, ket).reshape(size_7d)
+    #    self.assertAlmostEqual(np.max(np.absolute(eri_ref-eri_direct)), 0, prec)
 
-    def test_ao_fft(self):
-        self._test_ao(self.rhf_fft, kragf2_ao2mo._make_ao_eris_direct_fftdf)
+    #def test_ao_fft(self):
+    #    self._test_ao(self.rhf_fft, kragf2_ao2mo._make_ao_eris_direct_fftdf)
 
-    def test_ao_aft(self):
-        self._test_ao(self.rhf_aft, kragf2_ao2mo._make_ao_eris_direct_aftdf)
+    #def test_ao_aft(self):
+    #    self._test_ao(self.rhf_aft, kragf2_ao2mo._make_ao_eris_direct_aftdf)
 
-    def test_ao_gdf(self):
-        self._test_ao(self.rhf_gdf, kragf2_ao2mo._make_ao_eris_direct_gdf)
+    #def test_ao_gdf(self):
+    #    self._test_ao(self.rhf_gdf, kragf2_ao2mo._make_ao_eris_direct_gdf)
 
-    def test_ao_mdf(self):
-        self._test_ao(self.rhf_mdf, kragf2_ao2mo._make_ao_eris_direct_mdf)
+    #def test_ao_mdf(self):
+    #    self._test_ao(self.rhf_mdf, kragf2_ao2mo._make_ao_eris_direct_mdf)
 
     def _test_mo(self, rhf):
         rhf.run(max_cycles=1)
@@ -96,9 +97,18 @@ class KnownValues(unittest.TestCase):
         eri_incore = kragf2_ao2mo._make_mo_eris_incore(gf2).eri
         self.assertAlmostEqual(np.max(np.absolute(eri_ref-eri_incore)), 0, prec)
 
-        bra, ket = kragf2_ao2mo._make_mo_eris_direct(gf2).eri
-        eri_direct = lib.einsum('abQp,abcQq->abcpq', bra, ket).reshape(size_7d)
-        self.assertAlmostEqual(np.max(np.absolute(eri_ref-eri_direct)), 0, prec)
+        if type(rhf.with_df) is df.GDF:
+            qij = kragf2_ao2mo._make_mo_eris_direct(gf2).eri
+            nmo = rhf.mo_occ[0].size
+            nkpts = len(rhf.kpts)
+            eri_direct = np.zeros((nkpts, nkpts, nkpts, nmo, nmo, nmo, nmo), dtype=np.complex128)
+            kconserv = get_kconserv(rhf.cell, rhf.kpts)
+            for i in range(nkpts):
+                for j in range(nkpts):
+                    for k in range(nkpts):
+                        l = kconserv[i,j,k]
+                        eri_direct[i,j,k] = np.dot(qij[i,j].T, qij[k,l]).reshape(nmo, nmo, nmo, nmo)
+            self.assertAlmostEqual(np.max(np.absolute(eri_ref-eri_direct)), 0, prec)
 
     def test_mo_fft(self):
         self._test_mo(self.rhf_fft)

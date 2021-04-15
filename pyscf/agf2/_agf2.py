@@ -46,7 +46,11 @@ def cholesky_build(vv, vev, eps=1e-16, do_twice=False):
         w, v = np.linalg.eigh(vv)
         w[w < eps] = eps
         vv_posdef = np.dot(np.dot(v, np.diag(w)), v.T.conj())
-        b = np.linalg.cholesky(vv_posdef).conj().T
+        #b = np.linalg.cholesky(vv_posdef).conj().T
+        next_eps = eps*100
+        if next_eps > 1e-8:
+            raise ValueError('eps got too low, w: %s' % repr(w))
+        return cholesky_build(vv_posdef, vev, eps=next_eps, do_twice=do_twice)
 
     b_inv = np.linalg.inv(b)
 
