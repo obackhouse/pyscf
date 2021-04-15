@@ -174,50 +174,43 @@ def build_se_part(agf2, eri, gf_occ, gf_vir, os_factor=1.0, ss_factor=1.0):
     vv = np.zeros((nkpts, nmo, nmo), dtype=np.complex128)
     vev = np.zeros((nkpts, nmo, nmo), dtype=np.complex128)
 
-    if isinstance(eri.eri, (tuple, list)):
-        naux = eri.naux
+    #FIXME: this probably isn't true...
+    # constraining kj via conservation instead of ka means that we
+    # don't have to do any padding tricks, as kx,ki,ka are all in
+    # independent spaces
+    #FIXME the sizes can still be different i think :(
+    for kxia in mpi_helper.nrange(nkpts**3):
+        kxi, ka = divmod(kxia, nkpts)
+        kx, ki = divmod(kxi, nkpts)
+        kj = kconserv[kx,ki,ka]
 
-        #FIXME: this probably isn't true...
-        # constraining kj via conservation instead of ka means that we
-        # don't have to do any padding tricks, as kx,ki,ka are all in
-        # independent spaces
-        #FIXME the sizes can still be different i think :(
-        for kxia in mpi_helper.nrange(nkpts**3):
-            kxi, ka = divmod(kxia, nkpts)
-            kx, ki = divmod(kxi, nkpts)
-            kj = kconserv[kx,ki,ka]
+        ci, ei, ni = gf_occ[ki].coupling, gf_occ[ki].energy, gf_occ[ki].naux
+        cj, ej, nj = gf_occ[kj].coupling, gf_occ[kj].energy, gf_occ[kj].naux
+        ca, ea, na = gf_vir[ka].coupling, gf_vir[ka].energy, gf_vir[ka].naux
 
-            ci, ei, ni = gf_occ[ki].coupling, gf_occ[ki].energy, gf_occ[ki].naux
-            cj, ej, nj = gf_occ[kj].coupling, gf_occ[kj].energy, gf_occ[kj].naux
-            ca, ea, na = gf_vir[ka].coupling, gf_vir[ka].energy, gf_vir[ka].naux
-
+        if isinstance(eri.eri, (tuple, list)):
             qxi, qja = fmo2qmo(agf2, eri, (ci,cj,ca), (kx,ki,kj,ka))
             qxj, qia = fmo2qmo(agf2, eri, (cj,ci,ca), (kx,kj,ki,ka))
-
             vv_k, vev_k = _kagf2.build_mats_kragf2_direct(qxi, qja, qxj, qia, ei, ej, ea, **facs)
-            vv[kx] += vv_k
-            vev[kx] += vev_k
-
             del qxi, qja, qxj, qia
-
-    else:
-        for kxia in mpi_helper.nrange(nkpts**3):
-            kxi, ka = divmod(kxia, nkpts)
-            kx, ki = divmod(kxi, nkpts)
-            kj = kconserv[kx,ki,ka]
-
-            ci, ei, ni = gf_occ[ki].coupling, gf_occ[ki].energy, gf_occ[ki].naux
-            cj, ej, nj = gf_occ[kj].coupling, gf_occ[kj].energy, gf_occ[kj].naux
-            ca, ea, na = gf_vir[ka].coupling, gf_vir[ka].energy, gf_vir[ka].naux
-
+        elif isinstance(eri.eri, (df.AFTDF)):
+            #TODO make more efficient if this is good - ao2mo_7d-like function for custom kpts
+            cx_ao = agf2.mo_coeff[kx]
+            ci_ao = np.dot(agf2.mo_coeff[ki], ci)
+            cj_ao = np.dot(agf2.mo_coeff[kj], cj)
+            ca_ao = np.dot(agf2.mo_coeff[ka], ca)
+            pija = eri.eri.get_mo_eri((cx_ao, ci_ao, cj_ao, ca_ao), kpts[[kx,ki,kj,ka]])
+            pjia = eri.eri.get_mo_eri((cx_ao, cj_ao, ci_ao, ca_ao), kpts[[kx,kj,ki,ka]])
+            vv_k, vev_k = _kagf2.build_mats_kragf2_incore(pija, pjia, ei, ej, ea, **facs)
+            del pija, pjia
+        else:
             pija = fmo2qmo(agf2, eri, (ci,cj,ca), (kx,ki,kj,ka))
             pjia = fmo2qmo(agf2, eri, (cj,ci,ca), (kx,kj,ki,ka))
-
             vv_k, vev_k = _kagf2.build_mats_kragf2_incore(pija, pjia, ei, ej, ea, **facs)
-            vv[kx] += vv_k
-            vev[kx] += vev_k
-
             del pija, pjia
+
+        vv[kx] += vv_k
+        vev[kx] += vev_k
 
     mpi_helper.barrier()
     for kx in range(nkpts):
