@@ -97,6 +97,9 @@ def _get_3c2e(
 
         log.timer_debug1('3c2e part', *t1)
 
+    int3c2e = numpy.array(int3c2e, order='C')
+
+    mpi_helper.barrier()
     mpi_helper.allreduce_safe_inplace(int3c2e)
     mpi_helper.barrier()
 
