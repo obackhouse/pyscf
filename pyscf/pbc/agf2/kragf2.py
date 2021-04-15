@@ -375,15 +375,17 @@ def get_jk(agf2, eri, rdm1, with_j=True, with_k=True, madelung=None):
     else:
         vj, vk = get_jk_incore(agf2, eri, rdm1, with_j=with_j, with_k=with_k, madelung=madelung)
 
-    if not np.allclose(vj[kx], vj[kx].T.conj()):
-        error = np.max(np.absolute(vj[kx]-vj[kx].T.conj()))
-        log.debug1('vj not hermitian at kpt %d, error = %.3g', kx, error)
-    vj[kx] = 0.5 * (vj[kx] + vj[kx].T.conj())
+    for kx in range(len(rdm1)):
+        if not np.allclose(vj[kx], vj[kx].T.conj()):
+            error = np.max(np.absolute(vj[kx]-vj[kx].T.conj()))
+            log.debug1('vj not hermitian at kpt %d, error = %.3g', kx, error)
+        vj[kx] = 0.5 * (vj[kx] + vj[kx].T.conj())
 
-    if not np.allclose(vk[kx], vk[kx].T.conj()):
-        error = np.max(np.absolute(vk[kx]-vk[kx].T.conj()))
-        log.debug1('vk not hermitian at kpt %d, error = %.3g', kx, error)
-    vk[kx] = 0.5 * (vk[kx] + vk[kx].T.conj())
+    for kx in range(len(rdm1)):
+        if not np.allclose(vk[kx], vk[kx].T.conj()):
+            error = np.max(np.absolute(vk[kx]-vk[kx].T.conj()))
+            log.debug1('vk not hermitian at kpt %d, error = %.3g', kx, error)
+        vk[kx] = 0.5 * (vk[kx] + vk[kx].T.conj())
 
     return vj, vk
     
