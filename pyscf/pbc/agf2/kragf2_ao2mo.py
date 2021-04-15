@@ -34,6 +34,8 @@ from pyscf.pbc.cc.ccsd import _adjust_occ
 from pyscf.pbc.mp.kmp2 import get_nocc, get_nmo, padding_k_idx, \
                               padded_mo_coeff, padded_mo_energy
 
+#TODO dtypes
+
 
 #TODO: parallelise get_hcore and get_veff
 #NOTE: is mo_energy and fock even used...? pointless...
@@ -98,6 +100,7 @@ class _ChemistsERIs:
         if not hasattr(self, 'eri') or not isinstance(self.eri, (tuple, list)):
             raise AttributeError
         return self.eri[0].shape[2]
+
 
 #TODO dtype - do we just inherit the mo_coeff.dtype or use np.result_type(eri, mo_coeff) ?
 #TODO blksize, max_memory
@@ -173,175 +176,6 @@ def _make_mo_eris_incore(agf2, mo_coeff=None):
 
     #return eris
 
-##TODO: fix block size?? ft_loop has max_memory argument
-def _make_ao_eris_direct_aftdf(agf2, eris):
-    ''' Get the 3c AO tensors for AFTDF '''
-
-    with_df = agf2.with_df
-    cell = with_df.cell
-    dtype = complex
-    kpts = eris.kpts
-    nkpts = len(kpts)
-    ngrids = len(cell.gen_uniform_grids(with_df.mesh))
-    nao = cell.nao
-    kconserv = tools.get_kconserv(cell, kpts)
-    if agf2.keep_exxdiv and agf2._scf.exxdiv in ['vcut_sph', 'vcut_ws']:
-        #TODO: test
-        exxdiv = agf2._scf.exxdiv
-    else:
-        exxdiv = False
-    
-    bra = np.zeros((nkpts, nkpts, ngrids, cell.nao**2), dtype=dtype)
-    ket = np.zeros((nkpts, nkpts, nkpts, ngrids, cell.nao**2), dtype=dtype)
-
-    kij = np.array([(ki,kj) for ki in kpts for kj in kpts])
-    kis, kjs = kij[:,0], kij[:,1]
-    q = kjs - kis
-    ukpts, uidx, uinv = kpts_helper.unique(q)
-
-    for uid in mpi_helper.nrange(len(ukpts)):
-        q = ukpts[uid]
-        adapted_ji = np.where(uinv == uid)[0]
-        kjs = kij[:,1][adapted_ji]
-        fac = with_df.weighted_coulG(q, exx=exxdiv, mesh=with_df.mesh) / nkpts
-
-        for aoaoks, p0, p1 in with_df.ft_loop(with_df.mesh, q, kjs):
-            for ji, aoao in enumerate(aoaoks):
-                ki, kj = divmod(adapted_ji[ji], nkpts)
-                bra[ki,kj,p0:p1] = fac[p0:p1,None] * aoao.reshape(p1-p0, -1)
-
-        ki, kj = divmod(adapted_ji[0], nkpts)
-        kls = kpts[kconserv[ki,kj,:]]
-
-        for aoaoks, p0, p1 in with_df.ft_loop(with_df.mesh, q, -kls):
-            for kk, aoao in enumerate(aoaoks):
-                for ji, ji_idx in enumerate(adapted_ji):
-                    ki, kj = divmod(ji_idx, nkpts)
-                    ket[ki,kj,kk,p0:p1] = aoao.conj().reshape(p1-p0, -1)
-
-    mpi_helper.barrier()
-    mpi_helper.allreduce_safe_inplace(bra)
-    mpi_helper.allreduce_safe_inplace(ket)
-
-    return bra, ket
-
-#TODO: blksize loop over mesh?
-def _make_ao_eris_direct_fftdf(agf2, eris):
-    ''' Get the 3c AO tensors for FFTDF '''
-
-    with_df = agf2.with_df
-    cell = with_df.cell
-    dtype = complex
-    kpts = eris.kpts
-    nkpts = len(kpts)
-    kconserv = tools.get_kconserv(cell, kpts)
-    coords = cell.gen_uniform_grids(with_df.mesh)
-    aos = with_df._numint.eval_ao(cell, coords, kpts)
-    ngrids = len(coords)
-    if agf2.keep_exxdiv and agf2._scf.exxdiv in ['vcut_sph', 'vcut_ws']:
-        #TODO: test
-        exxdiv = agf2._scf.exxdiv
-    else:
-        exxdiv = False
-
-    bra = np.zeros((nkpts, nkpts, ngrids, cell.nao**2), dtype=dtype)
-    ket = np.zeros((nkpts, nkpts, nkpts, ngrids, cell.nao**2), dtype=dtype)
-
-    kij = np.array([(ki,kj) for ki in kpts for kj in kpts])
-    kis, kjs = kij[:,0], kij[:,1]
-    q = kjs - kis
-    ukpts, uidx, uinv = kpts_helper.unique(q)
-
-    for uid in mpi_helper.nrange(len(ukpts)):
-        q = ukpts[uid]
-        adapted_ji = np.where(uinv == uid)[0]
-        ki, kj = divmod(adapted_ji[0], nkpts)
-
-        fac = tools.get_coulG(cell, q, exx=exxdiv, mesh=with_df.mesh)
-        fac *= (cell.vol / ngrids) / nkpts
-        phase = np.exp(-1j * np.dot(coords, q))
-
-        for ji_idx in adapted_ji:
-            ki, kj = divmod(ji_idx, nkpts)
-
-            buf = lib.einsum('gi,gj->gij', aos[ki].conj(), aos[kj])
-            buf = buf.reshape(ngrids, -1)
-            bra[ki,kj] = buf
-
-            for kk in range(nkpts):
-                kl = kconserv[ki,kj,kk]
-
-                buf = lib.einsum('gi,g,gj->ijg', aos[kk].conj(), phase.conj(), aos[kl])
-                buf = tools.ifft(buf.reshape(-1, ngrids), with_df.mesh) * fac
-                buf = tools.fft(buf.reshape(-1, ngrids), with_df.mesh) * phase
-                ket[ki,kj,kk] = lib.transpose(buf)
-
-                buf = None
-
-    mpi_helper.barrier()
-    mpi_helper.allreduce_safe_inplace(bra)
-    mpi_helper.allreduce_safe_inplace(ket)
-
-    return bra.conj(), ket
-
-#TODO: I think gdf can have different naux at different k-points, but we just pad with zeros
-#TODO bra-ket symmetry? Must split 1/nkpts factor and sign (could be complex?)
-#TODO: not actually saving on unique k-points here!?
-def _make_ao_eris_direct_gdf(agf2, eris):
-    ''' Get the 3c AO tensors for GDF '''
-
-    with_df = agf2.with_df
-    cell = with_df.cell
-    dtype = complex
-    kpts = eris.kpts
-    nkpts = len(kpts)
-    kconserv = tools.get_kconserv(cell, kpts)
-    ngrids = with_df.auxcell.nao_nr()
-
-    bra = np.zeros((nkpts, nkpts, ngrids, cell.nao**2), dtype=dtype)
-    ket = np.zeros((nkpts, nkpts, nkpts, ngrids, cell.nao**2), dtype=dtype)
-
-    kij = np.array([(ki,kj) for ki in kpts for kj in kpts])
-    kis, kjs = kij[:,0], kij[:,1]
-    q = kjs - kis
-    ukpts, uidx, uinv = kpts_helper.unique(q)
-
-    for uid in mpi_helper.nrange(len(ukpts)):
-        adapted_ji = np.where(uinv == uid)[0]
-
-        for ji_idx in adapted_ji:
-            ki, kj = divmod(ji_idx, nkpts)
-
-            p1 = 0
-            for qij_r, qij_i, sign in with_df.sr_loop(kpts[[ki,kj]], compact=False):
-                p0, p1 = p1, p1 + qij_r.shape[0] 
-                bra[ki,kj,p0:p1] = (qij_r + qij_i * 1j) * np.sqrt(sign+0j) / np.sqrt(nkpts)
-
-            for kk in range(nkpts):
-                kl = kconserv[ki,kj,kk]
-
-                q1 = 0
-                for qkl_r, qkl_i, sign in with_df.sr_loop(kpts[[kk,kl]], compact=False):
-                    q0, q1 = q1, q1 + qkl_r.shape[0]
-                    ket[ki,kj,kk,q0:q1] = (qkl_r + qkl_i * 1j) * np.sqrt(sign+0j) / np.sqrt(nkpts)
-
-    mpi_helper.barrier()
-    mpi_helper.allreduce_safe_inplace(bra)
-    mpi_helper.allreduce_safe_inplace(ket)
-
-    return bra, ket
-
-#TODO: write out custom function combining aftdf and gdf to avoid copying
-def _make_ao_eris_direct_mdf(agf2, eris):
-    ''' Get the 3c AO tensors for MDF '''
-
-    eri0 = _make_ao_eris_direct_aftdf(agf2, eris)
-    eri1 = _make_ao_eris_direct_gdf(agf2, eris)
-
-    bra = np.concatenate((eri0[0], eri1[0]), axis=-2)
-    ket = np.concatenate((eri0[1], eri1[1]), axis=-2)
-
-    return bra, ket
 
 def _fao2mo(eri, cp, cq, dtype, out=None):
     ''' DF ao2mo '''
@@ -364,6 +198,7 @@ def _fao2mo(eri, cp, cq, dtype, out=None):
 
     return out.reshape(naux, npq)
 
+
 def _make_mo_eris_direct(agf2, mo_coeff=None):
     # (pq|L)(L|rs) incore
 
@@ -375,64 +210,44 @@ def _make_mo_eris_direct(agf2, mo_coeff=None):
 
     cell = agf2.cell
     with_df = agf2.with_df
+    dtype = np.complex128
     kpts = eris.kpts
     nkpts = len(kpts)
     kconserv = tools.get_kconserv(cell, kpts)
+    ngrids = with_df.auxcell.nao_nr()
     nmo = eris.nmo
 
-    if mo_coeff is None:
-        mo_coeff = eris.mo_coeff
+    if not isinstance(with_df, df.GDF):
+        raise NotImplementedError('AGF2 with direct=True for density '
+                                  'fitting scheme which are not GDF.')
 
-    if isinstance(with_df, df.MDF):
-        bra, ket = _make_ao_eris_direct_mdf(agf2, eris)
-    elif isinstance(with_df, df.GDF):
-        bra, ket = _make_ao_eris_direct_gdf(agf2, eris)
-    elif isinstance(with_df, df.AFTDF):
-        bra, ket = _make_ao_eris_direct_aftdf(agf2, eris)
-    elif isinstance(with_df, df.FFTDF):
-        bra, ket = _make_ao_eris_direct_fftdf(agf2, eris)
-    else:
-        raise ValueError('Unknown DF type %s' % type(with_df))
+    if cell.dimension != 3:
+        raise NotImplementedError('GDF for cell dimension < 3 is not '
+                                  'positive definite, not supported '
+                                  'in AGF2 with direct=True.')
 
-    dtype = complex
-    naux = bra.shape[2]
+    qij = np.zeros((nkpts, nkpts, ngrids, cell.nao**2), dtype=dtype)
 
-    kij = np.array([(ki,kj) for ki in kpts for kj in kpts])
-    kis, kjs = kij[:,0], kij[:,1]
-    q = kjs - kis
-    ukpts, uidx, uinv = kpts_helper.unique(q)
+    for kij in mpi_helper.nrange(nkpts**2):
+        ki, kj = divmod(kij, nkpts)
+        kpti_kptj = np.array((kpts[ki], kpts[kj]))
+        ci, cj = eris.mo_coeff[[ki,kj]]
 
-    qij = np.zeros((nkpts, nkpts, naux, nmo**2), dtype=dtype)
-    qkl = np.zeros((nkpts, nkpts, nkpts, naux, nmo**2), dtype=dtype)
-
-    for uid in mpi_helper.nrange(len(ukpts)):
-        q = ukpts[uid]
-        adapted_ji = np.where(uinv == uid)[0]
-        kjs = kij[:,1][adapted_ji]
-
-        for ji, ji_idx in enumerate(adapted_ji):
-            ki, kj = divmod(adapted_ji[ji], nkpts)
-            ci = mo_coeff[ki]
-            cj = mo_coeff[kj]
-            qij[ki,kj] = _fao2mo(bra[ki,kj], ci, cj, dtype, out=qij[ki,kj])
-
-            for kk in range(nkpts):
-                kl = kconserv[ki,kj,kk]
-                ck = mo_coeff[kk]
-                cl = mo_coeff[kl]
-                qkl[ki,kj,kk] = _fao2mo(ket[ki,kj,kk], ck, cl, dtype, out=qkl[ki,kj,kk])
+        p1 = 0
+        for qij_r, qij_i, sign in with_df.sr_loop(kpti_kptj, compact=False):
+            p0, p1 = p1, p1 + qij_r.shape[0] 
+            tmp = (qij_r + qij_i * 1j) / np.sqrt(nkpts)
+            qij[ki,kj,p0:p1] = _fao2mo(tmp, ci, cj, dtype, out=qij[ki,kj,p0:p1])
 
     mpi_helper.barrier()
     mpi_helper.allreduce_safe_inplace(qij)
-    mpi_helper.allreduce_safe_inplace(qkl)
 
-    eris.qij = qij
-    eris.qkl = qkl
-    eris.eri = (qij, qkl)
+    eris.eri = qij
 
     log.timer('MO integral transformation', *cput0)
 
     return eris
+
 
 def _make_qmo_eris_incore(agf2, eri, coeffs, kpts):
     ''' (xi|ja)
@@ -459,6 +274,7 @@ def _make_qmo_eris_incore(agf2, eri, coeffs, kpts):
 
     return xija
 
+
 def _make_qmo_eris_direct(agf2, eri, coeffs, kpts):
     ''' (xi|L)(L|rs) incore
     '''
@@ -472,13 +288,13 @@ def _make_qmo_eris_direct(agf2, eri, coeffs, kpts):
     ci, cj, ca = coeffs
     nmo = eri.nmo
     
-    dtype = np.result_type(eri.qij.dtype, eri.qkl.dtype, ci.dtype, cj.dtype, ca.dtype)
-    naux = eri.eri[0].shape[2]
+    dtype = np.result_type(eri.eri.dtype, ci.dtype, cj.dtype, ca.dtype)
+    naux = eri.eri.shape[2]
 
-    qwx = eri.eri[0][kx,ki].reshape(-1, nmo)
+    qwx = eri.eri[kx,ki].reshape(-1, nmo)
     qwi = np.dot(qwx, ci).reshape(naux, -1)
 
-    qyz = eri.eri[1][kx,ki,kj].reshape(-1, nmo, nmo)
+    qyz = eri.eri[kj,ka].reshape(-1, nmo, nmo)
     qja = _fao2mo(qyz, cj, ca, dtype).reshape(naux, -1)
 
     #log.timer('QMO integral transformation', *cput0)
