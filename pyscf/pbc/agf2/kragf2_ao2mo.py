@@ -116,7 +116,7 @@ def _make_mo_eris_incore(agf2, mo_coeff=None):
     eris = _ChemistsERIs()
     eris._common_init_(agf2, mo_coeff)
     with_df = agf2.with_df
-    dtype = complex
+    dtype = np.complex128
 
     nmo = agf2.nmo
     npair = nmo * (nmo+1) // 2
@@ -193,7 +193,7 @@ def _fao2mo(eri, cp, cq, dtype, out=None):
     if dtype in [np.float, np.float64]:
         out = ao2mo._ao2mo.nr_e2(eri, cpq, spq, out=out, **sym)
     else:
-        cpq = np.asarray(cpq, dtype=complex)
+        cpq = np.asarray(cpq, dtype=np.complex128)
         out = ao2mo._ao2mo.r_e2(eri, cpq, spq, [], None, out=out)
 
     return out.reshape(naux, npq)
@@ -239,8 +239,11 @@ def _make_mo_eris_direct(agf2, mo_coeff=None):
             tmp = (qij_r + qij_i * 1j) / np.sqrt(nkpts)
             qij[ki,kj,p0:p1] = _fao2mo(tmp, ci, cj, dtype, out=qij[ki,kj,p0:p1])
 
+        tmp = None
+
     mpi_helper.barrier()
     mpi_helper.allreduce_safe_inplace(qij)
+    mpi_helper.barrier()
 
     eris.eri = qij
 

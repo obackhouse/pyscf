@@ -174,46 +174,6 @@ def build_se_part(agf2, eri, gf_occ, gf_vir, os_factor=1.0, ss_factor=1.0):
     vv = np.zeros((nkpts, nmo, nmo), dtype=np.complex128)
     vev = np.zeros((nkpts, nmo, nmo), dtype=np.complex128)
 
-    #if isinstance(eri.eri, (tuple, list)):
-    #    naux = eri.naux
-
-    #    for kxia in mpi_helper.nrange(nkpts**3):
-    #        kxi, ka = divmod(kxia, nkpts)
-    #        kx, ki = divmod(kxi, nkpts)
-    #        kj = kconserv[kx,ki,ka]
-
-    #        ci, ei, ni = gf_occ[ki].coupling, gf_occ[ki].energy, gf_occ[ki].naux
-    #        cj, ej, nj = gf_occ[kj].coupling, gf_occ[kj].energy, gf_occ[kj].naux
-    #        ca, ea, na = gf_vir[ka].coupling, gf_vir[ka].energy, gf_vir[ka].naux
-
-    #        qxi, qja = fmo2qmo(agf2, eri, (ci,cj,ca), (kx,ki,kj,ka))
-    #        qxj, qia = fmo2qmo(agf2, eri, (cj,ci,ca), (kx,kj,ki,ka))
-
-    #        vv_k, vev_k = _kagf2.build_mats_kragf2_direct(qxi, qja, qxj, qia, ei, ej, ea, **facs)
-    #        vv[kx] += vv_k
-    #        vev[kx] += vev_k
-
-    #        del qxi, qja, qxj, qia
-
-    #else:
-    #    for kxia in mpi_helper.nrange(nkpts**3):
-    #        kxi, ka = divmod(kxia, nkpts)
-    #        kx, ki = divmod(kxi, nkpts)
-    #        kj = kconserv[kx,ki,ka]
-
-    #        ci, ei, ni = gf_occ[ki].coupling, gf_occ[ki].energy, gf_occ[ki].naux
-    #        cj, ej, nj = gf_occ[kj].coupling, gf_occ[kj].energy, gf_occ[kj].naux
-    #        ca, ea, na = gf_vir[ka].coupling, gf_vir[ka].energy, gf_vir[ka].naux
-
-    #        pija = fmo2qmo(agf2, eri, (ci,cj,ca), (kx,ki,kj,ka))
-    #        pjia = fmo2qmo(agf2, eri, (cj,ci,ca), (kx,kj,ki,ka))
-
-    #        vv_k, vev_k = _kagf2.build_mats_kragf2_incore(pija, pjia, ei, ej, ea, **facs)
-    #        vv[kx] += vv_k
-    #        vev[kx] += vev_k
-
-    #        del pija, pjia
-
     #FIXME: this probably isn't true...
     # constraining kj via conservation instead of ka means that we
     # don't have to do any padding tricks, as kx,ki,ka are all in
@@ -249,9 +209,19 @@ def build_se_part(agf2, eri, gf_occ, gf_vir, os_factor=1.0, ss_factor=1.0):
 
     se = []
     for kx in range(nkpts):
-        #TODO remove checks
-        assert np.allclose(vv[kx], vv[kx].T.conj())
-        assert np.allclose(vev[kx], vev[kx].T.conj())
+        #TODO remove checks?
+        if not np.allclose(vv[kx], vv[kx].T.conj()):
+            error = np.max(np.absolute(vv[kx]-vv[kx].T.conj()))
+            log.debug1('0th moment not hermitian at kpt %d, '
+                       'error = %.3g', kx, error)
+        vv[kx] = 0.5 * (vv[kx] + vv[kx].T.conj())
+
+        if not np.allclose(vev[kx], vev[kx].T.conj()):
+            error = np.max(np.absolute(vev[kx]-vev[kx].T.conj()))
+            log.debug1('1st moment not hermitian at kpt %d, '
+                       'error = %.3g', kx, error)
+        vev[kx] = 0.5 * (vev[kx] + vev[kx].T.conj())
+                        
         e, c = _agf2.cholesky_build(vv[kx], vev[kx], do_twice=True)
         se_kx = aux.SelfEnergy(e, c, chempot=gf_occ[kx].chempot)
         se_kx.remove_uncoupled(tol=tol)
@@ -404,6 +374,16 @@ def get_jk(agf2, eri, rdm1, with_j=True, with_k=True, madelung=None):
         vj, vk = get_jk_direct(agf2, eri, rdm1, with_j=with_j, with_k=with_k, madelung=madelung)
     else:
         vj, vk = get_jk_incore(agf2, eri, rdm1, with_j=with_j, with_k=with_k, madelung=madelung)
+
+    if not np.allclose(vj[kx], vj[kx].T.conj()):
+        error = np.max(np.absolute(vj[kx]-vj[kx].T.conj()))
+        log.debug1('vj not hermitian at kpt %d, error = %.3g', kx, error)
+    vj[kx] = 0.5 * (vj[kx] + vj[kx].T.conj())
+
+    if not np.allclose(vk[kx], vk[kx].T.conj()):
+        error = np.max(np.absolute(vk[kx]-vk[kx].T.conj()))
+        log.debug1('vk not hermitian at kpt %d, error = %.3g', kx, error)
+    vk[kx] = 0.5 * (vk[kx] + vk[kx].T.conj())
 
     return vj, vk
     
@@ -728,6 +708,15 @@ class KRAGF2(ragf2.RAGF2):
             eri = kragf2_ao2mo._make_mo_eris_direct(self, mo_coeff)
         else:
             eri = kragf2_ao2mo._make_mo_eris_incore(self, mo_coeff)
+
+        # Ensure that errors are equal on different processes, can be
+        # different with hybrid parallelism due to non-commutative
+        # arithmetic under rounding
+        #TODO do this blockwise???
+        mpi_helper.barrier()
+        mpi_helper.allreduce_safe_inplace(eri.eri)
+        mpi_helper.barrier()
+        eri.eri /= mpi_helper.size
 
         return eri
 
