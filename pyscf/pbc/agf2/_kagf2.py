@@ -24,12 +24,8 @@ from pyscf.agf2 import mpi_helper
 
 libagf2 = lib.load_library('libagf2')
 
-#TODO can we just generalise the C code to work for both pbc and mol...?
-
 
 def build_mats_kragf2_incore(qija, qjia, ei, ej, ea, os_factor=1.0, ss_factor=1.0):
-    #vv1, vev1 = _build_mats_kragf2_incore(qija, qjia, ei, ej, ea, os_factor, ss_factor)
-    #return vv1, vev1
     ''' Wraps KAGF2ee_vv_vev_islice
     '''
 
@@ -77,8 +73,6 @@ def build_mats_kragf2_incore(qija, qjia, ei, ej, ea, os_factor=1.0, ss_factor=1.
 
 
 def build_mats_kragf2_direct(qxi, qja, qxj, qia, ei, ej, ea, os_factor=1.0, ss_factor=1.0):
-    #return _build_mats_kragf2_direct(qxi, qja, qxj, qia, ei, ej, ea, os_factor=os_factor, ss_factor=ss_factor)
-    #vv1, vev1 = _build_mats_kragf2_direct(qxi, qja, qxj, qia, ei, ej, ea, os_factor=os_factor, ss_factor=ss_factor)
     ''' Wraps KAGF2df_vv_vev_islice
     '''
 

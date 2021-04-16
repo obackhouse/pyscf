@@ -37,7 +37,6 @@ from pyscf.pbc.mp.kmp2 import get_nocc, get_nmo, padding_k_idx, \
 #TODO dtypes
 
 
-#TODO: parallelise get_hcore and get_veff
 #NOTE: is mo_energy and fock even used...? pointless...
 class _ChemistsERIs:
     ''' (pq|rs)
@@ -87,11 +86,11 @@ class _ChemistsERIs:
             self.h1e.append(np.dot(np.dot(ci.conj().T, h1e_ao[ki]), ci))
             self.fock.append(np.dot(np.dot(ci.conj().T, fock_ao[ki]), ci))
 
-        if not agf2.keep_exxdiv:
-            madelung = tools.madelung(agf2.cell, agf2.kpts)
-            self.mo_energy = [f.diagonal().real for f in self.fock]
-            self.mo_energy = [_adjust_occ(mo_e, self.nocc[k], -madelung) 
-                              for k, mo_e in enumerate(self.mo_energy)]
+        #if not agf2.keep_exxdiv:
+        #    madelung = tools.madelung(agf2.cell, agf2.kpts)
+        #    self.mo_energy = [f.diagonal().real for f in self.fock]
+        #    self.mo_energy = [_adjust_occ(mo_e, self.nocc[k], -madelung) 
+        #                      for k, mo_e in enumerate(self.mo_energy)]
 
         self.e_hf = agf2._scf.e_tot
 
@@ -102,8 +101,6 @@ class _ChemistsERIs:
         return self.eri[0].shape[2]
 
 
-#TODO dtype - do we just inherit the mo_coeff.dtype or use np.result_type(eri, mo_coeff) ?
-#TODO blksize, max_memory
 #TODO symmetry broken (commented)
 def _make_mo_eris_incore(agf2, mo_coeff=None):
     # (pq|rs) incore
@@ -116,7 +113,6 @@ def _make_mo_eris_incore(agf2, mo_coeff=None):
     eris = _ChemistsERIs()
     eris._common_init_(agf2, mo_coeff)
     with_df = agf2.with_df
-    dtype = np.complex128
 
     nmo = agf2.nmo
     npair = nmo * (nmo+1) // 2
@@ -125,6 +121,12 @@ def _make_mo_eris_incore(agf2, mo_coeff=None):
     nkpts = len(kpts)
     khelper = agf2.khelper
     kconserv = khelper.kconserv
+
+    if kpts_helper.gamma_point(kpts):
+        dtype = np.float64
+    else:
+        dtype = np.complex128
+    dtype = np.result_type(dtype, *[x.dtype for x in eris.mo_coeff])
 
     eri = np.empty((nkpts, nkpts, nkpts, nmo, nmo, nmo, nmo), dtype=dtype)
 
@@ -139,7 +141,7 @@ def _make_mo_eris_incore(agf2, mo_coeff=None):
         eri_kpt = with_df.ao2mo(coeffs, kijkl, compact=False)
         eri_kpt = eri_kpt.reshape(nmo, nmo, nmo, nmo)
 
-        if dtype in [np.float, np.float64]:
+        if dtype is np.float64:
             eri_kpt = eri_kpt.real
 
         eri[kp,kq,kr] = eri_kpt / nkpts
@@ -153,7 +155,7 @@ def _make_mo_eris_incore(agf2, mo_coeff=None):
     #    eri_kpt = with_df.ao2mo(coeffs, kijkl, compact=False)
     #    eri_kpt = eri_kpt.reshape(nmo, nmo, nmo, nmo)
 
-    #    if dtype in [np.float, np.float64]: 
+    #    if dtype is np.float64:
     #        eri_kpt = eri_kpt.real
 
     #    for kp, kq, kr in khelper.symm_map[(ikp, ikq, ikr)]:
@@ -169,17 +171,9 @@ def _make_mo_eris_incore(agf2, mo_coeff=None):
 
     return eris
 
-    ##NOTE Uncomment to convert to incore:
-    #eris = _make_mo_eris_direct(agf2, mo_coeff)
-    #eris.eri = lib.einsum('ablp,abclq->abcpq', eris.qij, eris.qkl).reshape((agf2.nkpts,)*3+(agf2.nmo,)*4)
-    #del eris.qij, eris.qkl
-
-    #return eris
-
 
 def _fao2mo(eri, cp, cq, dtype, out=None):
     ''' DF ao2mo '''
-    #return np.einsum('lpq,pi,qj->lij', eri.reshape(-2, cp.shape[0], cq.shape[0]), cp.conj(), cq).reshape(-1, cp.shape[1]*cq.shape[1])
 
     npq, cpq, spq = ao2mo.incore._conc_mos(cp, cq, compact=False)[1:]
     sym = dict(aosym='s1', mosym='s1')
@@ -190,7 +184,7 @@ def _fao2mo(eri, cp, cq, dtype, out=None):
     out = out.reshape(naux, cp.shape[1]*cq.shape[1])
     out = out.astype(dtype)
 
-    if dtype in [np.float, np.float64]:
+    if dtype is np.float64:
         out = ao2mo._ao2mo.nr_e2(eri, cpq, spq, out=out, **sym)
     else:
         cpq = np.asarray(cpq, dtype=np.complex128)
@@ -210,12 +204,17 @@ def _make_mo_eris_direct(agf2, mo_coeff=None):
 
     cell = agf2.cell
     with_df = agf2.with_df
-    dtype = np.complex128
     kpts = eris.kpts
     nkpts = len(kpts)
     kconserv = tools.get_kconserv(cell, kpts)
     ngrids = with_df.auxcell.nao_nr()
     nmo = eris.nmo
+
+    if kpts_helper.gamma_point(kpts):
+        dtype = np.complex128
+    else:
+        dtype = np.float64
+    dtype = np.result_type(dtype, *[x.dtype for x in eris.mo_coeff])
 
     if not isinstance(with_df, df.GDF):
         raise NotImplementedError('AGF2 with direct=True for density '
@@ -255,7 +254,6 @@ def _make_mo_eris_direct(agf2, mo_coeff=None):
 def _make_qmo_eris_incore(agf2, eri, coeffs, kpts):
     ''' (xi|ja)
     '''
-    #return np.einsum('pqrs,qi,rj,sa->pija', eri.eri[kpts[0],kpts[1],kpts[2]], coeffs[0], coeffs[1].conj(), coeffs[2])
 
     #cput0 = (time.clock(), time.time())
     #log = logger.Logger(agf2.stdout, agf2.verbose)
@@ -281,8 +279,6 @@ def _make_qmo_eris_incore(agf2, eri, coeffs, kpts):
 def _make_qmo_eris_direct(agf2, eri, coeffs, kpts):
     ''' (xi|L)(L|rs) incore
     '''
-    #return (np.einsum('lpq,qi->lpi', eri.qij[kpts[0],kpts[1]].reshape(-1, eri.nmo, eri.nmo), coeffs[0].conj()).reshape(-1, eri.nmo*coeffs[0].shape[1]), 
-    #        np.einsum('lpq,pi,qj->lij', eri.qkl[kpts[0],kpts[1],kpts[2]].reshape(-1, eri.nmo, eri.nmo), coeffs[1].conj(), coeffs[2]).reshape(-1, coeffs[1].shape[1]*coeffs[2].shape[1]))
 
     #cput0 = (time.clock(), time.time())
     #log = logger.Logger(agf2.stdout, agf2.verbose)
