@@ -34,17 +34,7 @@ from pyscf.agf2 import aux, ragf2, _agf2, mpi_helper, chkfile as chkutil
 from pyscf.agf2.chempot import binsearch_chempot, minimize_chempot
 from pyscf.pbc.mp.kmp2 import get_nocc, get_nmo, get_frozen_mask
 
-#TODO: change some allreduce to allgather 
-#TODO: check aft, this may be broken?
-#TODO: change agf2 object to gf2 and molecular code
-#TODO: fix molecular code DIIS to use the Aux.moment function
-#TODO: should we track convergence via etot?
-#TODO: re-tests direct stuff - had to change conj
 
-#NOTE: agf2.nmo is .max()'d, must all be the same, whilst agf2.nocc is per-kpoint and can be different
-
-
-#NOTE: printing IPs and EAs doesn't work with ragf2 kernel - fix later for better inheritance 
 def kernel(agf2, eri=None, gf=None, se=None, verbose=None, dump_chk=True):
 
     log = logger.new_logger(agf2, verbose)
@@ -75,7 +65,6 @@ def kernel(agf2, eri=None, gf=None, se=None, verbose=None, dump_chk=True):
         diis = None
 
     e_init = agf2.energy_mp2(agf2.mo_energy, se)
-    #e_init = agf2.energy_2body(gf, se) / 2
     log.info('E(init) = %.16g  E_corr(init) = %.16g', e_init+eri.e_hf, e_init)
 
     e_1b = eri.e_hf
@@ -126,10 +115,9 @@ def kernel(agf2, eri=None, gf=None, se=None, verbose=None, dump_chk=True):
     return converged, e_1b, e_2b, gf, se
 
 
-#TODO: we probably need to deal with padded energies here? maybe only in the first iteration..?
 def build_se_part(agf2, eri, gf_occ, gf_vir, os_factor=1.0, ss_factor=1.0):
     ''' Builds either the auxiliaries of the occupied self-energy at
-        each k-point, or virtual if :attr:`gf_occ` and :attr:`gf_vir` 
+        each k-point, or virtual if :attr:`gf_occ` and :attr:`gf_vir`
         are swapped.
 
     Args:
@@ -174,11 +162,6 @@ def build_se_part(agf2, eri, gf_occ, gf_vir, os_factor=1.0, ss_factor=1.0):
     vv = np.zeros((nkpts, nmo, nmo), dtype=np.complex128)
     vev = np.zeros((nkpts, nmo, nmo), dtype=np.complex128)
 
-    #FIXME: this probably isn't true...
-    # constraining kj via conservation instead of ka means that we
-    # don't have to do any padding tricks, as kx,ki,ka are all in
-    # independent spaces
-    #FIXME the sizes can still be different i think :(
     for kxia in mpi_helper.nrange(nkpts**3):
         kxi, ka = divmod(kxia, nkpts)
         kx, ki = divmod(kxi, nkpts)
@@ -191,12 +174,16 @@ def build_se_part(agf2, eri, gf_occ, gf_vir, os_factor=1.0, ss_factor=1.0):
         if agf2.direct:
             qxi, qja = fmo2qmo(agf2, eri, (ci,cj,ca), (kx,ki,kj,ka))
             qxj, qia = fmo2qmo(agf2, eri, (cj,ci,ca), (kx,kj,ki,ka))
-            vv_k, vev_k = _kagf2.build_mats_kragf2_direct(qxi, qja, qxj, qia, ei, ej, ea, **facs)
+            vv_k, vev_k = _kagf2.build_mats_kragf2_direct(
+                    qxi, qja, qxj, qia, ei, ej, ea, **facs,
+            )
             del qxi, qja, qxj, qia
         else:
             pija = fmo2qmo(agf2, eri, (ci,cj,ca), (kx,ki,kj,ka))
             pjia = fmo2qmo(agf2, eri, (cj,ci,ca), (kx,kj,ki,ka))
-            vv_k, vev_k = _kagf2.build_mats_kragf2_incore(pija, pjia, ei, ej, ea, **facs)
+            vv_k, vev_k = _kagf2.build_mats_kragf2_incore(
+                    pija, pjia, ei, ej, ea, **facs,
+            )
             del pija, pjia
 
         vv[kx] += vv_k
@@ -209,7 +196,6 @@ def build_se_part(agf2, eri, gf_occ, gf_vir, os_factor=1.0, ss_factor=1.0):
 
     se = []
     for kx in range(nkpts):
-        #TODO remove checks?
         if not np.allclose(vv[kx], vv[kx].T.conj()):
             error = np.max(np.absolute(vv[kx]-vv[kx].T.conj()))
             log.debug1('0th moment not hermitian at kpt %d, '
@@ -221,7 +207,7 @@ def build_se_part(agf2, eri, gf_occ, gf_vir, os_factor=1.0, ss_factor=1.0):
             log.debug1('1st moment not hermitian at kpt %d, '
                        'error = %.3g', kx, error)
         vev[kx] = 0.5 * (vev[kx] + vev[kx].T.conj())
-                        
+
         e, c = _agf2.cholesky_build(vv[kx], vev[kx], do_twice=True)
         se_kx = aux.SelfEnergy(e, c, chempot=gf_occ[kx].chempot)
         se_kx.remove_uncoupled(tol=tol)
@@ -232,9 +218,6 @@ def build_se_part(agf2, eri, gf_occ, gf_vir, os_factor=1.0, ss_factor=1.0):
     return se
 
 
-#TODO: can we adapt these k-space get_jk functions to point-group symmetry easily?
-#TODO: maybe optimised with pyscf lib
-#NOTE: should we fuse loops?
 def get_jk_direct(agf2, eri, rdm1, with_j=True, with_k=True, madelung=None):
     ''' Get the J/K matrices.
 
@@ -293,20 +276,18 @@ def get_jk_direct(agf2, eri, rdm1, with_j=True, with_k=True, madelung=None):
             kl = agf2.khelper.kconserv[ki,kj,kk]
             buf = lib.dot(eri[ki,kl].reshape(-1, nmo), rdm1[kl].conj(), c=buf)
             buf = buf.reshape(-1, nmo, nmo).swapaxes(1,2).reshape(-1, nmo)
-            vk[ki] = lib.dot(buf.T, eri[kk,kj].reshape(-1, nmo), c=vk[ki], beta=1).T.conj()
+            vk[ki] = lib.dot(buf.T, eri[kk,kj].reshape(-1, nmo), 
+                             c=vk[ki], beta=1).T.conj()
 
         mpi_helper.barrier()
         mpi_helper.allreduce_safe_inplace(vk)
 
-        #NOTE: should keep_exxdiv even be considered here?
         if agf2.keep_exxdiv and agf2._scf.exxdiv == 'ewald':
             vk += get_ewald(agf2, rdm1, madelung=madelung)
 
     return vj, vk
 
 
-#TODO: check
-#TODO: optimise
 def get_jk_incore(agf2, eri, rdm1, with_j=True, with_k=True, madelung=None):
     ''' Get the J/K matrices.
 
@@ -333,7 +314,7 @@ def get_jk_incore(agf2, eri, rdm1, with_j=True, with_k=True, madelung=None):
     nkpts = len(rdm1)
     nmo = agf2.nmo
     dtype = np.result_type(eri.dtype, *[x.dtype for x in rdm1])
-    
+
     eri = eri.reshape(nkpts, nkpts, nkpts, nmo, nmo, nmo, nmo)
 
     vj = vk = None
@@ -362,7 +343,6 @@ def get_jk_incore(agf2, eri, rdm1, with_j=True, with_k=True, madelung=None):
         mpi_helper.barrier()
         mpi_helper.allreduce_safe_inplace(vk)
 
-        #NOTE: should keep_exxdiv even be considered here?
         if agf2.keep_exxdiv and agf2._scf.exxdiv == 'ewald':
             vk += get_ewald(agf2, rdm1, madelung=madelung)
 
@@ -371,24 +351,28 @@ def get_jk_incore(agf2, eri, rdm1, with_j=True, with_k=True, madelung=None):
 
 def get_jk(agf2, eri, rdm1, with_j=True, with_k=True, madelung=None):
     if agf2.direct:
-        vj, vk = get_jk_direct(agf2, eri, rdm1, with_j=with_j, with_k=with_k, madelung=madelung)
+        vj, vk = get_jk_direct(agf2, eri, rdm1, with_j=with_j, 
+                               with_k=with_k, madelung=madelung)
     else:
-        vj, vk = get_jk_incore(agf2, eri, rdm1, with_j=with_j, with_k=with_k, madelung=madelung)
+        vj, vk = get_jk_incore(agf2, eri, rdm1, with_j=with_j, 
+                               with_k=with_k, madelung=madelung)
 
     for kx in range(len(rdm1)):
         if not np.allclose(vj[kx], vj[kx].T.conj()):
             error = np.max(np.absolute(vj[kx]-vj[kx].T.conj()))
-            log.debug1('vj not hermitian at kpt %d, error = %.3g', kx, error)
+            logger.debug1(agf2, 'vj not hermitian at kpt %d, error = %.3g', 
+                          kx, error)
         vj[kx] = 0.5 * (vj[kx] + vj[kx].T.conj())
 
     for kx in range(len(rdm1)):
         if not np.allclose(vk[kx], vk[kx].T.conj()):
             error = np.max(np.absolute(vk[kx]-vk[kx].T.conj()))
-            log.debug1('vk not hermitian at kpt %d, error = %.3g', kx, error)
+            logger.debug1(agf2, 'vk not hermitian at kpt %d, error = %.3g', 
+                          kx, error)
         vk[kx] = 0.5 * (vk[kx] + vk[kx].T.conj())
 
     return vj, vk
-    
+
 
 def get_ewald(agf2, rdm1, madelung=None):
     ''' Get the Ewald exchange contribution. The density matrix is
@@ -445,23 +429,6 @@ def get_fock(agf2, eri, gf=None, rdm1=None, madelung=None):
     return fock
 
 
-#TODO: remove?
-def adjust_occ(agf2, gf):
-    ''' Modify the occupied energies of the Green's function according
-        to the Madelung constant.
-    '''
-
-    if not agf2.keep_exxdiv:
-        madelung = tools.madelung(agf2.cell, agf2.kpts)
-        for kx in range(agf2.nkpts):
-            occ = gf[kx].energy < gf[kx].chempot
-            gf[kx].energy[occ] -= madelung
-
-    return gf
-
-
-#NOTE: padding should not affect the nelec, because the padded elements will be zero
-#NOTE: how will the padding effect the projection of the QMOs into physical space?
 def fock_loop(agf2, eri, gf, se, nelec_per_kpt=None):
     ''' Self-consistent loop for the density matrix via the HF self-
         consistent field in k-space.
@@ -509,7 +476,8 @@ def fock_loop(agf2, eri, gf, se, nelec_per_kpt=None):
     for niter1 in range(1, agf2.max_cycle_outer+1):
         for kx in range(nkpts):
             nelec = nelec_per_kpt[kx]
-            se[kx], opt = minimize_chempot(se[kx], fock[kx], nelec, x0=se[kx].chempot, **opts)
+            se[kx], opt = minimize_chempot(se[kx], fock[kx], nelec, 
+                                           x0=se[kx].chempot, **opts)
 
         for niter2 in range(1, agf2.max_cycle_inner+1):
             nerr = 0
@@ -545,7 +513,8 @@ def fock_loop(agf2, eri, gf, se, nelec_per_kpt=None):
             converged = True
             break
 
-    log.info('fock converged = %s  dN = %.3g  |ddm| = %.3g', converged, nerr, derr)
+    log.info('fock converged = %s  dN = %.3g  |ddm| = %.3g', 
+             converged, nerr, derr)
     for kx in range(nkpts):
         log.info('      k-point %d  chempot = %.9g', kx, se[kx].chempot)
     log.timer('fock loop', *cput0)
@@ -633,7 +602,6 @@ def energy_mp2(agf2, mo_energy, se, return_mean=True):
     return emp2
 
 
-#TODO: memoize energy_nuc() in _ChemistsERIs
 class KRAGF2(ragf2.RAGF2):
     #TODO: doc
     ''' Restricted AGF2 with canonical HF reference in k-space
@@ -701,10 +669,6 @@ class KRAGF2(ragf2.RAGF2):
     def ao2mo(self, mo_coeff=None):
         ''' Get the electronic repulsion integrals in MO basis.
         '''
-        #TODO FIXME 
-        from pyscf.pbc import df
-        if self.direct and type(self.with_df) == df.FFTDF:
-            raise ValueError('direct + FFT broken')
 
         if self.direct:
             eri = kragf2_ao2mo._make_mo_eris_direct(self, mo_coeff)
@@ -714,7 +678,6 @@ class KRAGF2(ragf2.RAGF2):
         # Ensure that errors are equal on different processes, can be
         # different with hybrid parallelism due to non-commutative
         # arithmetic under rounding
-        #TODO do this blockwise???
         mpi_helper.barrier()
         mpi_helper.allreduce_safe_inplace(eri.eri)
         mpi_helper.barrier()
@@ -793,7 +756,8 @@ class KRAGF2(ragf2.RAGF2):
             elif nocc[kx] == nmo:
                 chempot = energy[kx][-1] + 1e-6
             else:
-                chempot = binsearch_chempot(np.diag(energy[kx]), nmo, nocc[kx]*2)[0]
+                chempot = binsearch_chempot(np.diag(energy[kx]), 
+                                            nmo, nocc[kx]*2)[0]
 
             gf.append(aux.GreensFunction(energy[kx], coupling, chempot=chempot))
 
@@ -840,14 +804,6 @@ class KRAGF2(ragf2.RAGF2):
                                   'no (i,j,a) or (a,b,i) configurations at '
                                   'k-point %d', kx)
 
-        #FIXME doesn't work
-        #if not self.keep_exxdiv:
-        #    madelung = tools.madelung(self.cell, self.kpts)
-        #    for kx in range(self.nkpts):
-        #        gf_occ[kx].energy -= madelung
-        #        chempot = 0.5 * (gf_occ[kx].energy.max() + gf_vir[kx].energy.min())
-        #        gf_occ[kx].chempot = gf_vir[kx].chempot = chempot
-
         se_occ = self.build_se_part(eri, gf_occ, gf_vir, **facs)
         se_vir = self.build_se_part(eri, gf_vir, gf_occ, **facs)
         se = [aux.combine(o, v) for o,v in zip(se_occ, se_vir)]
@@ -862,12 +818,14 @@ class KRAGF2(ragf2.RAGF2):
                 se_occ, se_vir = se[kx].get_occupied(), se[kx].get_virtual()
 
                 vv = np.dot(se_occ.coupling, se_occ.coupling.T.conj())
-                vev = np.dot(se_occ.coupling * se_occ.energy[None], se_occ.coupling.T.conj())
+                vev = np.dot(se_occ.coupling * se_occ.energy[None], 
+                             se_occ.coupling.T.conj())
                 e, c = _agf2.cholesky_build(vv, vev)
                 se_occ = aux.SelfEnergy(e, c, chempot=se_occ.chempot)
-                
+
                 vv = np.dot(se_vir.coupling, se_vir.coupling.T.conj())
-                vev = np.dot(se_vir.coupling * se_vir.energy[None], se_vir.coupling.T.conj())
+                vev = np.dot(se_vir.coupling * se_vir.energy[None], 
+                             se_vir.coupling.T.conj())
                 e, c = _agf2.cholesky_build(vv, vev)
                 se_vir = aux.SelfEnergy(e, c, chempot=se_vir.chempot)
 
@@ -908,8 +866,10 @@ class KRAGF2(ragf2.RAGF2):
         se_out = []
         for kx in range(self.nkpts):
             chempot = se[kx].chempot
-            se_occ = aux.SelfEnergy(*_agf2.cholesky_build(vv_occ[kx], vev_occ[kx]), chempot=chempot)
-            se_vir = aux.SelfEnergy(*_agf2.cholesky_build(vv_vir[kx], vev_vir[kx]), chempot=chempot)
+            e, v = _agf2.cholesky_build(vv_occ[kx], vev_occ[kx])
+            se_occ = aux.SelfEnergy(e, v, chempot=chempot)
+            e, v = _agf2.cholesky_build(vv_vir[kx], vev_vir[kx])
+            se_vir = aux.SelfEnergy(e, v, chempot=chempot)
             se_out.append(aux.combine(se_occ, se_vir))
 
         return se_out
@@ -957,7 +917,7 @@ class KRAGF2(ragf2.RAGF2):
                     self.__class__.__name__, self.e_tot, self.e_corr)
 
         for kx in range(self.nkpts):
-            logger.note(self, 'k-point %d  IP = %.16g  EA = %.16g  QP gap = %.16g', 
+            logger.note(self, 'k-point %d  IP = %.16g  EA = %.16g  QP gap = %.16g',
                         kx, ip[kx], ea[kx], ip[kx]+ea[kx])
 
         return self
@@ -978,7 +938,8 @@ class KRAGF2(ragf2.RAGF2):
             se = self.build_se(eri, gf)
 
         self.converged, self.e_1b, self.e_2b, self.gf, self.se = \
-                kernel(self, eri=eri, gf=gf, se=se, verbose=self.verbose, dump_chk=dump_chk)
+                kernel(self, eri=eri, gf=gf, se=se, 
+                       verbose=self.verbose, dump_chk=dump_chk)
 
         self._finalize()
 
@@ -1008,7 +969,6 @@ class KRAGF2(ragf2.RAGF2):
         v_ip = [list(x.coupling[:,-nroots:].T)[::-1] for x in gf_occ]
         return e_ip, v_ip
 
-    #TODO: unpack vectors
     def ipagf2(self, nroots=5):
         ''' Find the (N-1) electron charged excitations at each k-point,
             corresponding to the largest :attr:`nroots` poles of the
@@ -1031,15 +991,16 @@ class KRAGF2(ragf2.RAGF2):
             logger.note(self, 'k-point %d  (%s)', kx, self.kpts[kx])
             for n, en, vn in zip(range(nroots), e_ip[kx], v_ip[kx]):
                 qpwt = np.linalg.norm(vn)**2
-                logger.note(self, 'IP energy level %d E = %.16g  QP weight = %0.6g', n, en, qpwt)
+                logger.note(self, 'IP energy level %d E = %.16g  '
+                            'QP weight = %0.6g', n, en, qpwt)
 
         e_ip = np.asarray(e_ip)
         v_ip = np.asarray(v_ip)
 
         #TODO this is then different than what is printed and stored in self.gf !?!?!?! #FIXME
-        if not self.keep_exxdiv:
-            madelung = tools.madelung(self.cell, self.kpts)
-            e_ip += madelung
+        #if not self.keep_exxdiv:
+        #    madelung = tools.madelung(self.cell, self.kpts)
+        #    e_ip += madelung
 
         if nroots == 1:
             return e_ip.reshape(self.nkpts,), v_ip.reshape(self.nkpts, self.nmo)
@@ -1067,7 +1028,8 @@ class KRAGF2(ragf2.RAGF2):
             logger.note(self, 'k-point %d  (%s)', kx, self.kpts[kx])
             for n, en, vn in zip(range(nroots), e_ea[kx], v_ea[kx]):
                 qpwt = np.linalg.norm(vn)**2
-                logger.note(self, 'EA energy level %d E = %.16g  QP weight = %0.6g', n, en, qpwt)
+                logger.note(self, 'EA energy level %d E = %.16g  '
+                            'QP weight = %0.6g', n, en, qpwt)
 
         e_ea = np.asarray(e_ea)
         v_ea = np.asarray(v_ea)
@@ -1169,8 +1131,8 @@ if __name__ == '__main__':
         eri1 = eri.eri
         eri2 = rhf.with_df.ao2mo_7d(np.asarray(rhf.mo_coeff)+0j, kpts=rhf.kpts) / len(rhf.kpts)
 
-        ci = np.random.random((gf2.nmo, max(gf2.nocc)*2)) + 1.0j * np.random.random((gf2.nmo, max(gf2.nocc)*2)) 
-        cj = np.random.random((gf2.nmo, max(gf2.nocc)*2)) + 1.0j * np.random.random((gf2.nmo, max(gf2.nocc)*2))  
+        ci = np.random.random((gf2.nmo, max(gf2.nocc)*2)) + 1.0j * np.random.random((gf2.nmo, max(gf2.nocc)*2))
+        cj = np.random.random((gf2.nmo, max(gf2.nocc)*2)) + 1.0j * np.random.random((gf2.nmo, max(gf2.nocc)*2))
         ca = np.random.random((gf2.nmo, (gf2.nmo-max(gf2.nocc))*2)) + 1.0j * np.random.random((gf2.nmo, (gf2.nmo-max(gf2.nocc))*2))
         qmo0 = np.einsum('pqrs,qi,rj,sa->pija', eri2[0,1,0], ci, cj.conj(), ca)
         qmo1_bra, qmo1_ket = kragf2_ao2mo._make_qmo_eris_direct(gf2, eri_df, (ci,cj,ca), [0,1,0,1])
@@ -1248,7 +1210,7 @@ if __name__ == '__main__':
 
     test_eri(rhf)
     test_fock(rhf)
-    
+
     #gf2a = KRAGF2(rhf)
     #gf2a.direct = False
     #gf2a.damping = 0.5
