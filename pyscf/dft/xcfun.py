@@ -131,7 +131,7 @@ XC = XC_CODES = {
 'BPW91'         : 'B88 + PW91C',
 'BPW92'         : 'B88 + PW92C',
 'OLYP'          : '2.4832*SLATER - 1.43169*OPTX + LYP',  # CPL, 341, 319
-'KT1'           : 'SLATERX - 0.006*KTX',  # Keal-Tozer 1, JCP, 119, 3015
+'KT1X'           : 'SLATERX - 0.006*KTX',  # Keal-Tozer 1, JCP, 119, 3015
 'KT2XC'         : '1.07173*SLATER - .006*KTX + 0.576727*VWN5',  # Keal-Tozer 2, JCP, 119, 3015
 'KT3XC'         : 'SLATERX*1.092 + KTX*-0.004 + OPTXCORR*-0.925452 + LYPC*0.864409',  # Keal-Tozer 3, JCP, 121, 5654
 # == '2.021452*SLATER - .004*KTX - .925452*OPTX + .864409*LYP',
@@ -202,7 +202,7 @@ XC_ALIAS = {
 #    'MVSH'              : 'MVSH,REGTPSS',
 #    'SOGGA11'           : 'SOGGA11,SOGGA11',
 #    'SOGGA11-X'         : 'SOGGA11X,SOGGA11X',
-    'KT1'               : 'KT1,VWN',
+    'KT1'               : 'KT1X,VWN',
 #    'DLDF'              : 'DLDF,DLDF',
 #    'GAM'               : 'GAM,GAM',
     'M06-L'             : 'M06L,M06L',
@@ -240,14 +240,19 @@ HYB_XC = set(('PBE0'    , 'PBE1PBE' , 'B3PW91'  , 'B3P86'   , 'B3LYP'   ,
 RSH_XC = set(('CAMB3LYP',))
 MAX_DERIV_ORDER = 3
 
-VV10_DAT = {
+VV10_XC = {
     'B97M_V'    : [6.0, 0.01],
     'WB97M_V'   : [6.0, 0.01],
     'WB97X_V'   : [6.0, 0.01],
     'VV10'      : [5.9, 0.0093],
     'LC_VV10'   : [6.3, 0.0089],
+    'REVSCAN_VV10': [9.8, 0.0093],
+    'SCAN_RVV10'  : [15.7, 0.0093],
+    'SCAN_VV10'   : [14.0, 0.0093],
+    'SCANL_RVV10' : [15.7, 0.0093],
+    'SCANL_VV10'  : [14.0, 0.0093],
 }
-VV10_XC = set(VV10_DAT.keys())
+VV10_XC.update([(key.replace('_', ''), val) for key, val in VV10_XC.items()])
 
 def xc_type(xc_code):
     if xc_code is None:
@@ -289,16 +294,26 @@ def is_gga(xc_code):
     return xc_type(xc_code) == 'GGA'
 
 def is_nlc(xc_code):
-    return xc_code.upper() in VV10_XC
+    return '__VV10' in xc_code.upper()
 
 def nlc_coeff(xc_code):
     '''Get NLC coefficients
     '''
     xc_code = xc_code.upper()
-    if is_nlc(xc_code):
-        return VV10_DAT[xc_code]
+
+    nlc_part = None
+    if '__VV10' in xc_code:
+        xc_code, nlc_part = xc_code.split('__', 1)
+
+    if xc_code in VV10_XC:
+        return VV10_XC[xc_code]
+    elif nlc_part is not None:
+        # Use VV10 NLC parameters by default for the general case
+        return VV10_XC[nlc_part]
     else:
-        return 0, 0
+        raise NotImplementedError(
+            '%s does not have NLC part. Available functionals are %s' %
+            (xc_code, ', '.join(VV10_XC.keys())))
 
 def rsh_coeff(xc_code):
     '''Get Range-separated-hybrid coefficients
@@ -414,7 +429,7 @@ def parse_xc(description):
                 fac, key = sign, token
 
             if key[:3] == 'RSH':
-# RSH(alpha; beta; omega): Range-separated-hybrid functional
+                # RSH(alpha; beta; omega): Range-separated-hybrid functional
                 alpha, beta, omega = [float(x) for x in key[4:-1].split(';')]
                 assign_omega(omega, fac*(alpha+beta), fac*alpha)
             elif key == 'HF':
@@ -823,7 +838,6 @@ def _eval_xc(hyb, fn_facs, rho, spin=0, relativity=0, deriv=1, verbose=None):
     else:
         omega = [0] * len(facs)
 
-    fn_ids_set = set(fn_ids)
     n = len(fn_ids)
     if (n == 0 or  # xc_code = '' or xc_code = 'HF', an empty functional
         all((is_lda(x) for x in fn_ids))):  # LDA
@@ -855,11 +869,6 @@ def _eval_xc(hyb, fn_facs, rho, spin=0, relativity=0, deriv=1, verbose=None):
                             rho_u.ctypes.data_as(ctypes.c_void_p),
                             rho_d.ctypes.data_as(ctypes.c_void_p),
                             outbuf.ctypes.data_as(ctypes.c_void_p))
-
-    if outbuf.shape[0] != ngrids:
-        out = numpy.zeros((ngrids,outlen))
-        out[non0idx,:] = outbuf
-        outbuf = out
 
     outbuf = outbuf.T
     exc = outbuf[0]
