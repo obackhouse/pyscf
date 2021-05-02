@@ -63,7 +63,11 @@ def orbital_coeff(mol, fout, mo_coeff, spin='Alpha', symm=None, ene=None,
             occ[:neleca] = 1
         else:
             occ[:nelecb] = 1
-    fout.write('[MO]\n')
+
+    if spin == 'Alpha':
+        # Avoid duplicated [MO] session when dumping beta orbitals
+        fout.write('[MO]\n')
+
     for imo in range(nmo):
         fout.write(' Sym= %s\n' % symm[imo])
         fout.write(' Ene= %15.10g\n' % ene[imo])
@@ -104,9 +108,9 @@ def from_mcscf(mc, filename, ignore_h=IGNORE_H, cas_natorb=False):
     mol = mc.mol
     dm1 = mc.make_rdm1()
     if cas_natorb:
-        mo_coeff, ci, mo_energy = mc.canonicalize(sort=True, cas_natorb=cas_natorb)
+        mo_coeff, _, mo_energy = mc.canonicalize(sort=True, cas_natorb=cas_natorb)
     else:
-        mo_coeff, ci, mo_energy = mc.mo_coeff, mc.ci, mc.mo_energy
+        mo_coeff, mo_energy = mc.mo_coeff, mc.mo_energy
 
     mo_inv = numpy.dot(mc._scf.get_ovlp(), mo_coeff)
     occ = numpy.einsum('pi,pq,qi->i', mo_inv, dm1, mo_inv)
@@ -140,9 +144,9 @@ def from_chkfile(filename, chkfile, key='scf/mo_coeff', ignore_h=IGNORE_H):
             occ = None
         if occ.ndim == 2:
             orbital_coeff(mol, f, mo[0], spin='Alpha', ene=ene[0], occ=occ[0],
-                         ignore_h=ignore_h)
+                          ignore_h=ignore_h)
             orbital_coeff(mol, f, mo[1], spin='Beta', ene=ene[1], occ=occ[1],
-                         ignore_h=ignore_h)
+                          ignore_h=ignore_h)
         else:
             orbital_coeff(mol, f, mo, ene=ene, occ=occ, ignore_h=ignore_h)
 
@@ -248,30 +252,29 @@ def _parse_mo(lines, envs):
     mo_energy = []
     spins = []
     mo_occ = []
-    mo_coeff = []
     mo_coeff_prim = [] # primary data, will be reworked for missing values
+    coeff_idx = []
+    mo_id = 0
     for line in lines[1:]:
         line = line.upper()
         if 'SYM' in line:
             irrep_labels.append(line.split('=')[1].strip())
-            orb_prim = {}
-            mo_coeff_prim.append(orb_prim)
         elif 'ENE' in line:
             mo_energy.append(float(_d2e(line).split('=')[1].strip()))
+            mo_id = len(mo_energy) - 1
         elif 'SPIN' in line:
             spins.append(line.split('=')[1].strip())
         elif 'OCC' in line:
             mo_occ.append(float(_d2e(line.split('=')[1].strip())))
         else:
-            orb_prim.update({int(line.split()[0]) : float(_d2e(line.split()[1]))})
+            ao_id, c = line.split()[:2]
+            coeff_idx.append([int(ao_id) - 1, mo_id])
+            mo_coeff_prim.append(float(c))
 
-    number_of_aos = max([max(orb_prim_data) for orb_prim_data in mo_coeff_prim])
-    number_of_mos = len(mo_coeff_prim)
-
+    coeff_idx = numpy.array(coeff_idx)
+    number_of_aos, number_of_mos = coeff_idx.max(axis=0) + 1
     mo_coeff = numpy.zeros([number_of_aos, number_of_mos])
-    for n, orb_prim_data in enumerate(mo_coeff_prim):
-        for m, c in orb_prim_data.items():
-            mo_coeff[m-1, n] = c
+    mo_coeff[coeff_idx[:,0], coeff_idx[:,1]] = mo_coeff_prim
 
     mo_energy = numpy.array(mo_energy)
     mo_occ = numpy.array(mo_occ)
@@ -435,15 +438,15 @@ def header(mol, fout, ignore_h=IGNORE_H):
     fout.write('\n')
 
 def order_ao_index(mol):
-# reorder d,f,g fucntion to
-#  5D: D 0, D+1, D-1, D+2, D-2
-#  6D: xx, yy, zz, xy, xz, yz
-#
-#  7F: F 0, F+1, F-1, F+2, F-2, F+3, F-3
-# 10F: xxx, yyy, zzz, xyy, xxy, xxz, xzz, yzz, yyz, xyz
-#
-#  9G: G 0, G+1, G-1, G+2, G-2, G+3, G-3, G+4, G-4
-# 15G: xxxx yyyy zzzz xxxy xxxz yyyx yyyz zzzx zzzy xxyy xxzz yyzz xxyz yyxz zzxy
+    # reorder d,f,g fucntion to
+    #  5D: D 0, D+1, D-1, D+2, D-2
+    #  6D: xx, yy, zz, xy, xz, yz
+    #
+    #  7F: F 0, F+1, F-1, F+2, F-2, F+3, F-3
+    # 10F: xxx, yyy, zzz, xyy, xxy, xxz, xzz, yzz, yyz, xyz
+    #
+    #  9G: G 0, G+1, G-1, G+2, G-2, G+3, G-3, G+4, G-4
+    # 15G: xxxx yyyy zzzz xxxy xxxz yyyx yyyz zzzx zzzy xxyy xxzz yyzz xxyz yyxz zzxy
     idx = []
     off = 0
     if mol.cart:

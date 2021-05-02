@@ -254,7 +254,7 @@ def _get_intor_and_comp(intor_name, comp=None):
     return intor_name, comp
 
 _INTOR_FUNCTIONS = {
-#   Functiona name              : (comp-for-scalar, comp-for-spinor)
+    # Functiona name            : (comp-for-scalar, comp-for-spinor)
     'int1e_ovlp'                : (1, 1),
     'int1e_nuc'                 : (1, 1),
     'int1e_kin'                 : (1, 1),
@@ -555,9 +555,6 @@ def getints3c(intor_name, atm, bas, env, shls_slice=None, comp=1,
 
 def getints4c(intor_name, atm, bas, env, shls_slice=None, comp=1,
               aosym='s1', ao_loc=None, cintopt=None, out=None):
-    if shls_slice is None and any(bas[:,ANG_OF] > 6):
-        raise NotImplementedError('Two-electron integrals for high angular (l>=7) GTOs')
-
     aosym = _stand_sym_code(aosym)
     atm = numpy.asarray(atm, dtype=numpy.int32, order='C')
     bas = numpy.asarray(bas, dtype=numpy.int32, order='C')

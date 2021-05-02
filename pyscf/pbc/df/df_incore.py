@@ -69,7 +69,7 @@ def _get_3c2e(
     of Eq. 31.
     '''
 
-    t1 = (time.clock(), time.time())
+    t1 = (logger.process_clock(), logger.perf_counter())
 
     nkij = len(kptij_lst)
     nao = cell.nao_nr()
@@ -309,8 +309,8 @@ def _make_j3c(mydf, cell, auxcell, kptij_lst, cderi_file):
     fused_cell: auxcell and chgcell combined
     '''
 
-    t1 = (time.clock(), time.time())
     log = logger.Logger(mydf.stdout, mydf.verbose)
+    t1 = (logger.process_clock(), logger.perf_counter())
     fused_cell, fuse = fuse_auxcell(mydf, auxcell)
 
     if cell.dimension < 3:
@@ -517,7 +517,7 @@ class IncoreGDF(GDF):
                     logger.warn(self, 'Value of ._cderi is ignored. '
                                 'DF integrals will be saved in file %s .',
                                 cderi)
-            t1 = (time.clock(), time.time())
+            t1 = (logger.process_clock(), logger.perf_counter())
             self._cderi = self._make_j3c(self.cell, self.auxcell, kptij_lst, cderi)
             t1 = logger.timer_debug1(self, 'j3c', *t1)
 
