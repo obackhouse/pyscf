@@ -434,6 +434,39 @@ def energy_mp2(agf2, mo_energy, se):
     return np.ravel(emp2)[0]
 
 
+def as_scanner(agf2):
+    ''' Generate a scanner/solver for AGF2 PES.
+    '''
+
+    from pyscf import gto
+
+    if isinstance(agf2, lib.SinglePointScanner):
+        return agf2
+
+    logger.info(agf2, 'Set %s as a scanner', agf2.__class__)
+
+    class RAGF2_Scanner(agf2.__class__, lib.SinglePointScanner):
+        def __init__(self, agf2):
+            self.__dict__.update(agf2.__dict__)
+            self._scf = agf2._scf.as_scanner()
+        def __call__(self, mol_or_geom, **kwargs):
+            if isinstance(mol_or_geom, gto.Mole):
+                mol = mol_or_geom
+            else:
+                mol = self.mol.set_geom_(mol_or_geom, inplace=False)
+
+            self.reset(mol)
+
+            mf_scanner = self._scf
+            mf_scanner(mol)
+            self.mo_coeff = mf_scanner.mo_coeff
+            self.mo_occ = mf_scanner.mo_occ
+            self.kernel(**kwargs)
+            return self.e_tot
+
+    return RAGF2_Scanner(agf2)
+
+
 class RAGF2(lib.StreamObject):
     ''' Restricted AGF2 with canonical HF reference
 
@@ -828,6 +861,8 @@ class RAGF2(lib.StreamObject):
             myagf2.with_df.auxbasis = auxbasis
 
         return myagf2
+
+    as_scanner = as_scanner
 
 
     def get_ip(self, gf, nroots=5):
