@@ -47,10 +47,10 @@ def bcast(buf, root=0):
     if size == 1:
         return buf
 
-    is_array = isinstance(buf, np.ndarray)
+    is_array = comm.bcast(isinstance(buf, np.ndarray), root)
     buf = np.asarray(buf, order='C')
     buf = buf.astype(buf.dtype.char)
-    shape, mpi_dtype = comm.bcast((buf.shape, buf.dtype.char))
+    shape, mpi_dtype = comm.bcast((buf.shape, buf.dtype.char), root)
 
     if rank != root:
         buf = np.empty(shape, dtype=mpi_dtype)
@@ -75,10 +75,10 @@ def reduce(sendbuf, root=0, op=getattr(mpi, 'SUM', None)):
     if size == 1:
         return sendbuf
 
-    is_array = isinstance(sendbuf, np.ndarray)
+    is_array = comm.bcast(isinstance(sendbuf, np.ndarray), root)
     sendbuf = np.asarray(sendbuf, order='C')
     sendbuf = sendbuf.astype(sendbuf.dtype.char)
-    shape, mpi_dtype = comm.bcast((sendbuf.shape, sendbuf.dtype.char))
+    shape, mpi_dtype = comm.bcast((sendbuf.shape, sendbuf.dtype.char), root)
     assert sendbuf.shape == shape and sendbuf.dtype.char == mpi_dtype
 
     recvbuf = np.zeros_like(sendbuf)
@@ -97,10 +97,10 @@ def allreduce(sendbuf, root=0, op=getattr(mpi, 'SUM', None)):
     if size == 1:
         return sendbuf
 
-    is_array = isinstance(sendbuf, np.ndarray)
+    is_array = comm.bcast(isinstance(sendbuf, np.ndarray), root)
     sendbuf = np.asarray(sendbuf, order='C')
     sendbuf = sendbuf.astype(sendbuf.dtype.char)
-    shape, mpi_dtype = comm.bcast((sendbuf.shape, sendbuf.dtype.char))
+    shape, mpi_dtype = comm.bcast((sendbuf.shape, sendbuf.dtype.char), root)
     assert sendbuf.shape == shape and sendbuf.dtype.char == mpi_dtype
 
     recvbuf = np.zeros_like(sendbuf)
