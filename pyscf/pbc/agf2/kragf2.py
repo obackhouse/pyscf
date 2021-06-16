@@ -38,7 +38,7 @@ from pyscf.pbc.mp.kmp2 import get_nocc, get_nmo, get_frozen_mask
 def kernel(agf2, eri=None, gf=None, se=None, verbose=None, dump_chk=True):
 
     log = logger.new_logger(agf2, verbose)
-    cput1 = cput0 = (time.clock(), time.time())
+    cput1 = cput0 = (logger.process_clock(), logger.perf_counter())
     name = agf2.__class__.__name__
 
     if eri is None: eri = agf2.ao2mo()
@@ -143,7 +143,7 @@ def build_se_part(agf2, eri, gf_occ, gf_vir, os_factor=1.0, ss_factor=1.0):
     assert type(gf_occ[0]) is aux.GreensFunction
     assert type(gf_vir[0]) is aux.GreensFunction
 
-    cput0 = (time.clock(), time.time())
+    cput0 = (logger.process_clock(), logger.perf_counter())
     log = logger.Logger(agf2.stdout, agf2.verbose)
 
     nkpts = agf2.nkpts
@@ -454,7 +454,7 @@ def fock_loop(agf2, eri, gf, se, nelec_per_kpt=None):
     assert type(gf[0]) is aux.GreensFunction
     assert type(se[0]) is aux.SelfEnergy
 
-    cput0 = cput1 = (time.clock(), time.time())
+    cput0 = cput1 = (logger.process_clock(), logger.perf_counter())
     log = logger.Logger(agf2.stdout, agf2.verbose)
 
     diis = lib.diis.DIIS(agf2)
