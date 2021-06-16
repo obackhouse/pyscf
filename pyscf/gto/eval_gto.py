@@ -22,7 +22,7 @@ import numpy
 from pyscf import lib
 from pyscf.gto.moleintor import make_loc
 
-BLKSIZE = 128 # needs to be the same to lib/gto/grid_ao_drv.c
+BLKSIZE = 104  # must be equal to lib/gto/grid_ao_drv.h
 
 libcgto = lib.load_library('libcgto')
 
@@ -154,7 +154,7 @@ def _get_intor_and_comp(mol, eval_name, comp=None):
     return eval_name, comp
 
 _GTO_EVAL_FUNCTIONS = {
-#   Functiona name          : (comp-for-scalar, comp-for-spinor)
+    # Functiona name        : (comp-for-scalar, comp-for-spinor)
     'GTOval'                : (1, 1 ),
     'GTOval_ip'             : (3, 3 ),
     'GTOval_ig'             : (3, 3 ),
